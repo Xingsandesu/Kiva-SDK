@@ -28,7 +28,7 @@ Example:
             print(event.type, event.data)
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 # Re-export LangChain essentials for convenience
 from langchain.agents import create_agent
