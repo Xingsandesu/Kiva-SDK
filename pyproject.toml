@@ -36,12 +36,9 @@ dependencies = [
     "langchain>=1.2.3",
     "langchain-openai>=1.1.7",
     "langgraph>=1.0.5",
-]
-
-[project.optional-dependencies]
-console = [
     "rich>=13.0.0",
 ]
+
 dev = [
     "hypothesis>=6.150.0",
     "pytest>=9.0.2",

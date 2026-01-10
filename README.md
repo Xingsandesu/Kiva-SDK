@@ -14,7 +14,7 @@ A multi-agent orchestration SDK for building intelligent workflows
 ## Installation
 
 ```bash
-uv add kiva-sdk[all]
+uv add kiva-sdk
 ```
 
 ## Quick Start
