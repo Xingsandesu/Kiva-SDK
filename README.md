@@ -1,5 +1,7 @@
 # Kiva SDK
 
+> ⚠️ **Important Notice**: This project is currently in a rapid iteration/experimental phase, and the provided API may undergo disruptive changes at any time.
+
 A multi-agent orchestration SDK for building intelligent workflows
 
 ## Features
