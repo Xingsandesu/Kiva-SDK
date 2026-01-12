@@ -63,6 +63,12 @@ from kiva.exceptions import (
 from kiva.graph import build_orchestrator_graph, get_graph_edges, get_graph_nodes
 from kiva.router import AgentRouter
 from kiva.run import run
+from kiva.state import (
+    AgentInstanceState,
+    OrchestratorState,
+    PlanningResult,
+    TaskAssignment,
+)
 
 __all__ = [
     # Version
@@ -84,6 +90,11 @@ __all__ = [
     "build_orchestrator_graph",
     "get_graph_nodes",
     "get_graph_edges",
+    # State types
+    "OrchestratorState",
+    "AgentInstanceState",
+    "TaskAssignment",
+    "PlanningResult",
     # LangChain re-exports
     "create_agent",
     "ChatOpenAI",

@@ -24,6 +24,7 @@ class TestBuildOrchestratorGraph:
             "router_workflow",
             "supervisor_workflow",
             "parliament_workflow",
+            "execute_instance",
             "synthesize_results",
         }
         # CompiledStateGraph stores nodes in its nodes attribute
@@ -58,12 +59,13 @@ class TestGetGraphNodes:
         assert "router_workflow" in nodes
         assert "supervisor_workflow" in nodes
         assert "parliament_workflow" in nodes
+        assert "execute_instance" in nodes
         assert "synthesize_results" in nodes
 
     def test_node_count(self):
         """Test that the correct number of nodes is returned."""
         nodes = get_graph_nodes()
-        assert len(nodes) == 5
+        assert len(nodes) == 6
 
 
 class TestGetGraphEdges:
@@ -91,6 +93,11 @@ class TestGetGraphEdges:
         """Test that supervisor_workflow connects to synthesize_results."""
         edges = get_graph_edges()
         assert ("supervisor_workflow", "synthesize_results") in edges
+
+    def test_execute_instance_to_synthesize_edge(self):
+        """Test that execute_instance connects to synthesize_results."""
+        edges = get_graph_edges()
+        assert ("execute_instance", "synthesize_results") in edges
 
     def test_synthesize_to_end_edge(self):
         """Test that synthesize_results connects to end."""
