@@ -26,14 +26,34 @@ Example:
             def multiply(self, a: int, b: int) -> int:
                 '''Multiply two numbers.'''
                 return a * b
+
+    Modular application with routers::
+
+        from kiva import Kiva, AgentRouter
+
+        # In agents/weather.py
+        weather_router = AgentRouter(prefix="weather")
+
+        @weather_router.agent("forecast", "Gets forecasts")
+        def get_forecast(city: str) -> str:
+            return f"Sunny in {city}"
+
+        # In main.py
+        kiva = Kiva(base_url="...", api_key="...", model="gpt-4o")
+        kiva.include_router(weather_router)
+        kiva.run("What's the weather?")
 """
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from langchain.agents import create_agent
 from langchain_core.tools import tool as lc_tool
 from langchain_openai import ChatOpenAI
+
+if TYPE_CHECKING:
+    from kiva.router import AgentRouter
 
 
 @dataclass
@@ -187,6 +207,32 @@ class Kiva:
         """
         converted = self._to_tools(tools)
         self._agents.append(Agent(name=name, description=description, tools=converted))
+        return self
+
+    def include_router(self, router: "AgentRouter", prefix: str = "") -> "Kiva":
+        """Include agents from an AgentRouter.
+
+        Enables modular organization of agents across multiple files,
+        similar to FastAPI's include_router pattern.
+
+        Args:
+            router: The AgentRouter containing agent definitions.
+            prefix: Additional prefix to apply to all agent names.
+
+        Returns:
+            Self for method chaining.
+
+        Example:
+            >>> from agents.weather import weather_router
+            >>> kiva.include_router(weather_router)
+            >>> kiva.include_router(math_router, prefix="v2")
+        """
+        for agent_def in router.get_agents():
+            name = f"{prefix}_{agent_def.name}" if prefix else agent_def.name
+            tools = self._to_tools(agent_def.obj)
+            self._agents.append(
+                Agent(name=name, description=agent_def.description, tools=tools)
+            )
         return self
 
     def _build_agents(self) -> list:

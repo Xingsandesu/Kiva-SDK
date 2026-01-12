@@ -8,6 +8,7 @@ A multi-agent orchestration SDK for building intelligent workflows
 
 - **Three Workflow Patterns**: Router (simple), Supervisor (parallel), and Parliament (deliberative)
 - **Automatic Complexity Analysis**: Intelligent workflow selection based on task complexity
+- **Modular Architecture**: AgentRouter for organizing agents across multiple files
 - **Streaming Events**: Real-time execution monitoring with structured events
 - **Rich Console Output**: Beautiful terminal visualization (optional)
 - **Error Recovery**: Built-in error handling with recovery suggestions
@@ -51,6 +52,52 @@ class MathTools:
 
 # Run with rich console output
 kiva.run("What's the weather in Tokyo? Also calculate 15 * 8")
+```
+
+### Modular Application with AgentRouter
+
+For larger applications, use `AgentRouter` to organize agents across multiple files:
+
+```python
+# agents/weather.py
+from kiva import AgentRouter
+
+router = AgentRouter(prefix="weather")
+
+@router.agent("forecast", "Gets weather forecasts")
+def get_forecast(city: str) -> str:
+    """Get weather forecast for a city."""
+    return f"Sunny, 25°C in {city}"
+```
+
+```python
+# agents/math.py
+from kiva import AgentRouter
+
+router = AgentRouter(prefix="math")
+
+@router.agent("calculator", "Performs calculations")
+class Calculator:
+    def add(self, a: int, b: int) -> int:
+        """Add two numbers."""
+        return a + b
+```
+
+```python
+# main.py
+from kiva import Kiva
+from agents.weather import router as weather_router
+from agents.math import router as math_router
+
+kiva = Kiva(base_url="...", api_key="...", model="gpt-4o")
+
+kiva.include_router(weather_router)
+kiva.include_router(math_router)
+
+kiva.run("What's the weather in Tokyo? Calculate 15 * 8")
+```
+
+See [AgentRouter Documentation](docs/agent-router.md) for more details.
 ```
 
 ### Mid-Level API (Async with Console)
