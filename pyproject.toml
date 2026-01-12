@@ -55,10 +55,8 @@ packages = ["src/kiva"]
 [tool.hatch.build.targets.sdist]
 include = [
     "/src",
-    "/examples",
     "/README.md",
     "/LICENSE",
-    "/docs",
 ]
 
 [tool.pytest.ini_options]

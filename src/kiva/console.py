@@ -194,8 +194,7 @@ class KivaLiveRenderer:
         """Render the agent status table with instance support."""
         # Filter out hidden agent states (used only for color mapping in parallel mode)
         visible_agent_states = {
-            k: v for k, v in self.agent_states.items()
-            if not v.get("_hidden", False)
+            k: v for k, v in self.agent_states.items() if not v.get("_hidden", False)
         }
 
         if not visible_agent_states and not self.instance_states:
@@ -244,7 +243,11 @@ class KivaLiveRenderer:
                 content = task[:60] + "..." if len(task) > 60 else task
 
             # Show shortened instance ID
-            short_instance = instance_id.split("-")[-1][:8] if "-" in instance_id else instance_id[:8]
+            short_instance = (
+                instance_id.split("-")[-1][:8]
+                if "-" in instance_id
+                else instance_id[:8]
+            )
 
             table.add_row(
                 Text(agent_id, style=f"bold {color}"),
@@ -391,8 +394,12 @@ class KivaLiveRenderer:
             self.phase = "analyzing"
 
     def on_workflow_selected(
-        self, workflow: str, complexity: str, task_assignments: list,
-        parallel_strategy: str = "none", total_instances: int = 1
+        self,
+        workflow: str,
+        complexity: str,
+        task_assignments: list,
+        parallel_strategy: str = "none",
+        total_instances: int = 1,
     ):
         """Handle workflow selection event."""
         self.workflow_info = {"workflow": workflow, "complexity": complexity}
@@ -403,7 +410,8 @@ class KivaLiveRenderer:
         self.phase = "executing"
 
         # Only populate agent_states if NOT using parallel instances
-        # When using fan_out/map_reduce, instance_states will be populated by instance events
+        # When using fan_out/map_reduce, instance_states will be populated
+        # by instance events
         if parallel_strategy == "none":
             for i, task in enumerate(task_assignments):
                 agent_id = task.get("agent_id", f"agent_{i}")
@@ -423,7 +431,9 @@ class KivaLiveRenderer:
                     self._assign_agent_color(agent_id)
                     # Store in a temporary dict for color lookup
                     self.agent_states[agent_id] = {
-                        "color": self.AGENT_COLORS[(self.color_index - 1) % len(self.AGENT_COLORS)],
+                        "color": self.AGENT_COLORS[
+                            (self.color_index - 1) % len(self.AGENT_COLORS)
+                        ],
                         "_hidden": True,  # Mark as hidden, won't be rendered
                     }
 
@@ -504,12 +514,18 @@ class KivaLiveRenderer:
     def on_instance_complete(self, instance_id: str, agent_id: str, success: bool):
         """Handle instance complete event."""
         if instance_id in self.instance_states:
-            self.instance_states[instance_id]["status"] = "completed" if success else "error"
+            self.instance_states[instance_id]["status"] = (
+                "completed" if success else "error"
+            )
 
-    def on_instance_result(self, instance_id: str, agent_id: str, result: str, error: str | None):
+    def on_instance_result(
+        self, instance_id: str, agent_id: str, result: str, error: str | None
+    ):
         """Handle instance result event."""
         if instance_id in self.instance_states:
-            self.instance_states[instance_id]["status"] = "error" if error else "completed"
+            self.instance_states[instance_id]["status"] = (
+                "error" if error else "completed"
+            )
             self.instance_states[instance_id]["result"] = error or result
         else:
             color = self._get_agent_color(agent_id)
@@ -542,7 +558,9 @@ class KivaLiveRenderer:
             instance_id = result.get("instance_id")
             success = result.get("success", True)
             if instance_id and instance_id in self.instance_states:
-                self.instance_states[instance_id]["status"] = "completed" if success else "error"
+                self.instance_states[instance_id]["status"] = (
+                    "completed" if success else "error"
+                )
 
     def on_synthesize_start(self):
         """Handle synthesis phase start."""
@@ -686,15 +704,27 @@ async def run_with_console(
                     event.data.get("results", []),
                 )
                 # Check if all instances are done
-                all_instances_done = all(
-                    s["status"] in ("completed", "error")
-                    for s in renderer.instance_states.values()
-                ) if renderer.instance_states else True
-                all_agents_done = all(
-                    s["status"] in ("completed", "error")
-                    for s in renderer.agent_states.values()
-                ) if renderer.agent_states else True
-                if all_instances_done and all_agents_done and renderer.phase == "executing":
+                all_instances_done = (
+                    all(
+                        s["status"] in ("completed", "error")
+                        for s in renderer.instance_states.values()
+                    )
+                    if renderer.instance_states
+                    else True
+                )
+                all_agents_done = (
+                    all(
+                        s["status"] in ("completed", "error")
+                        for s in renderer.agent_states.values()
+                    )
+                    if renderer.agent_states
+                    else True
+                )
+                if (
+                    all_instances_done
+                    and all_agents_done
+                    and renderer.phase == "executing"
+                ):
                     renderer.on_synthesize_start()
             elif event.type == "final_result":
                 renderer.on_final_result(

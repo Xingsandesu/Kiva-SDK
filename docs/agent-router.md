@@ -1,13 +1,13 @@
-# AgentRouter - Modular Multi-file Applications
+# AgentRouter - 模块化多文件应用
 
-`AgentRouter` is a modular router provided by the Kiva SDK, inspired by FastAPI's `APIRouter`. It allows you to organize agents into multiple files, enabling you to build scalable large-scale applications.
+`AgentRouter` 是 Kiva SDK 提供的模块化路由器，灵感来自 FastAPI 的 `APIRouter`，让你能够将 agents 组织到多个文件中，构建可扩展的大型应用。
 
-## Why use AgentRouter?
+## 为什么需要 AgentRouter？
 
-As your project grows, defining all agents in a single file becomes difficult to maintain:
+当项目规模增长时，将所有 agents 定义在一个文件中会变得难以维护：
 
 ```python
-# ❌ Not Recommended: All agents in one file
+# ❌ 不推荐：所有 agents 在一个文件中
 kiva = Kiva(...)
 
 @kiva.agent("weather_forecast", "...")
@@ -22,54 +22,54 @@ def add(): ...
 @kiva.agent("math_multiply", "...")
 def multiply(): ...
 
-# ... many more agents
+# ... 更多 agents
 ```
 
-With `AgentRouter`, you can split agents into functional modules:
+使用 `AgentRouter` 可以将 agents 按功能模块拆分：
 
 ```
 myapp/
-├── main.py              # Entry point
+├── main.py              # 入口文件
 ├── agents/
 │   ├── __init__.py
-│   ├── weather.py       # Weather-related agents
-│   ├── math.py          # Math-related agents
-│   └── search.py        # Search-related agents
+│   ├── weather.py       # 天气相关 agents
+│   ├── math.py          # 数学相关 agents
+│   └── search.py        # 搜索相关 agents
 ```
 
-## Basic Usage
+## 基本用法
 
-### Create a Router
+### 创建 Router
 
 ```python
 from kiva import AgentRouter
 
-# Create a router with a prefix and tags
+# 创建带前缀的 router
 router = AgentRouter(prefix="weather", tags=["weather", "forecast"])
 ```
 
-### Register an Agent
+### 注册 Agent
 
 ```python
-# Single-tool agent - Decorating a function
-@router.agent("forecast", "Get weather forecast")
+# 单工具 agent - 装饰函数
+@router.agent("forecast", "获取天气预报")
 def get_forecast(city: str) -> str:
-    """Get the weather forecast for a city"""
-    return f"{city}: Sunny, 25°C"
+    """获取城市天气预报"""
+    return f"{city}: 晴天, 25°C"
 
-# Multi-tool agent - Decorating a class
-@router.agent("calculator", "Mathematical calculations")
+# 多工具 agent - 装饰类
+@router.agent("calculator", "数学计算")
 class Calculator:
     def add(self, a: int, b: int) -> int:
-        """Addition"""
+        """加法"""
         return a + b
     
     def multiply(self, a: int, b: int) -> int:
-        """Multiplication"""
+        """乘法"""
         return a * b
 ```
 
-### Use in Kiva
+### 在 Kiva 中使用
 
 ```python
 from kiva import Kiva
@@ -78,38 +78,38 @@ from agents.math import math_router
 
 kiva = Kiva(base_url="...", api_key="...", model="gpt-4o")
 
-# Include routers
+# 包含 routers
 kiva.include_router(weather_router)
 kiva.include_router(math_router)
 
-# Run
-kiva.run("How is the weather in Beijing? Also, calculate 15 * 8")
+# 运行
+kiva.run("北京天气怎么样？顺便算一下 15 * 8")
 ```
 
-## Prefix Naming
+## 前缀命名
 
-The `prefix` parameter of `AgentRouter` is automatically prepended to all agent names:
+`AgentRouter` 的 `prefix` 参数会自动添加到所有 agent 名称前：
 
 ```python
 router = AgentRouter(prefix="weather")
 
-@router.agent("forecast", "Weather forecast")  # Actual name: weather_forecast
+@router.agent("forecast", "天气预报")  # 实际名称: weather_forecast
 def forecast(): ...
 
-@router.agent("alerts", "Weather alerts")    # Actual name: weather_alerts
+@router.agent("alerts", "天气预警")    # 实际名称: weather_alerts
 def alerts(): ...
 ```
 
-You can also add an additional prefix when using `include_router`:
+在 `include_router` 时还可以添加额外前缀：
 
 ```python
 kiva.include_router(weather_router, prefix="v2")
 # weather_forecast -> v2_weather_forecast
 ```
 
-## Nested Routers
+## 嵌套 Router
 
-Routers can be nested to achieve finer-grained modularity:
+Router 可以嵌套，实现更细粒度的模块化：
 
 ```python
 # agents/weather/__init__.py
@@ -124,18 +124,18 @@ weather_router.include_router(alerts_router)
 # agents/weather/forecast.py
 forecast_router = AgentRouter(prefix="forecast")
 
-@forecast_router.agent("daily", "Daily forecast")
+@forecast_router.agent("daily", "每日预报")
 def daily(city: str) -> str: ...
 
-@forecast_router.agent("weekly", "Weekly forecast")
+@forecast_router.agent("weekly", "周预报")
 def weekly(city: str) -> str: ...
 ```
 
-Final agent names: `weather_forecast_daily`, `weather_forecast_weekly`
+最终 agent 名称：`weather_forecast_daily`, `weather_forecast_weekly`
 
-## Full Example
+## 完整示例
 
-### Project Structure
+### 项目结构
 
 ```
 myapp/
@@ -153,19 +153,19 @@ from kiva import AgentRouter
 
 router = AgentRouter(prefix="weather", tags=["weather"])
 
-@router.agent("forecast", "Get weather forecast")
+@router.agent("forecast", "获取天气预报")
 def get_forecast(city: str) -> str:
-    """Get the weather forecast for a specific city"""
+    """获取指定城市的天气预报"""
     forecasts = {
-        "beijing": "Beijing: Sunny, 25°C",
-        "tokyo": "Tokyo: Cloudy, 22°C",
+        "beijing": "北京: 晴, 25°C",
+        "tokyo": "东京: 多云, 22°C",
     }
-    return forecasts.get(city.lower(), f"{city}: No data available")
+    return forecasts.get(city.lower(), f"{city}: 暂无数据")
 
-@router.agent("alerts", "Get weather alerts")
+@router.agent("alerts", "获取天气预警")
 def get_alerts(region: str) -> str:
-    """Get weather alerts for a specific region"""
-    return f"{region}: No alerts"
+    """获取指定地区的天气预警"""
+    return f"{region}: 无预警"
 ```
 
 ### agents/math.py
@@ -175,17 +175,17 @@ from kiva import AgentRouter
 
 router = AgentRouter(prefix="math", tags=["math"])
 
-@router.agent("calculator", "Math calculator")
+@router.agent("calculator", "数学计算器")
 class Calculator:
     def calculate(self, expression: str) -> str:
-        """Evaluate a mathematical expression"""
+        """计算数学表达式"""
         try:
             return str(eval(expression))
         except Exception as e:
-            return f"Calculation error: {e}"
+            return f"计算错误: {e}"
     
     def add(self, a: int, b: int) -> int:
-        """Addition"""
+        """加法"""
         return a + b
 ```
 
@@ -210,10 +210,10 @@ def create_app() -> Kiva:
 
 if __name__ == "__main__":
     app = create_app()
-    app.run("How is the weather in Beijing? Calculate 100 / 4")
+    app.run("北京天气如何？计算 100 / 4")
 ```
 
-## API Reference
+## API 参考
 
 ### AgentRouter
 
@@ -221,20 +221,20 @@ if __name__ == "__main__":
 class AgentRouter:
     def __init__(
         self,
-        prefix: str = "",           # Prefix for agent names
-        tags: list[str] | None = None,  # Categorization tags
+        prefix: str = "",           # agent 名称前缀
+        tags: list[str] | None = None,  # 分类标签
     ): ...
     
     def agent(
         self,
-        name: str,          # Agent name
-        description: str,   # Agent description
+        name: str,          # agent 名称
+        description: str,   # agent 描述
     ) -> Callable: ...
     
     def include_router(
         self,
-        router: AgentRouter,  # Sub-router to include
-        prefix: str = "",     # Additional prefix
+        router: AgentRouter,  # 要包含的子 router
+        prefix: str = "",     # 额外前缀
     ) -> None: ...
     
     def get_agents(self) -> list[AgentDefinition]: ...
@@ -245,17 +245,17 @@ class AgentRouter:
 ```python
 def include_router(
     self,
-    router: AgentRouter,  # Router to include
-    prefix: str = "",     # Additional prefix
-) -> Kiva: ...  # Returns self, supports method chaining
+    router: AgentRouter,  # 要包含的 router
+    prefix: str = "",     # 额外前缀
+) -> Kiva: ...  # 返回 self，支持链式调用
 ```
 
-## Best Practices
+## 最佳实践
 
-1. **Group by functionality**: Keep related agents in the same router.
-2. **Use meaningful prefixes**: Prefixes should clearly express the module's purpose.
-3. **Keep routers independent**: Each router should be self-contained and not depend on other routers.
-4. **Method chaining**: `include_router` returns `self`, allowing for concise setup.
+1. **按功能模块划分**：将相关的 agents 放在同一个 router 中
+2. **使用有意义的前缀**：前缀应该清晰表达模块的功能
+3. **保持 router 独立**：每个 router 应该是自包含的，不依赖其他 router
+4. **链式调用**：`include_router` 返回 `self`，支持链式调用
 
 ```python
 kiva.include_router(weather_router) \

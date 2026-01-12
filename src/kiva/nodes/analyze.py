@@ -14,7 +14,8 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from kiva.state import OrchestratorState, PlanningResult, TaskAssignment
 
-ANALYZE_SYSTEM_PROMPT = """You are a task coordinator with advanced planning capabilities.
+ANALYZE_SYSTEM_PROMPT = """
+You are a task coordinator with advanced planning capabilities.
 Analyze user requests, assess complexity, select the best workflow, and determine
 parallelization strategy.
 

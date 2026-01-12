@@ -21,6 +21,17 @@ A multi-agent orchestration SDK for building intelligent workflows
 uv add kiva-sdk
 ```
 
+## Setup & Configuration
+
+Before running the SDK, you need to configure your API credentials using environment variables:
+
+```bash
+export KIVA_API_BASE="http://your-api-endpoint/v1"
+export KIVA_API_KEY="your-api-key"
+export KIVA_MODEL="your-model-name"
+```
+
+
 ## Quick Start
 
 ### High-Level API (Simplest)
@@ -264,6 +275,26 @@ async for event in run(
 
 - [AgentRouter - Modular Applications](docs/agent-router.md)
 - [Parallel Agent Instances](docs/parallel-instances.md)
+- [Execution Output Patterns](docs/execution-outputs.md)
+- [E2E Testing Guide](docs/e2e-testing-guide.md)
+
+## Testing
+
+The SDK includes comprehensive unit and end-to-end tests:
+
+```bash
+# Unit tests (no API required)
+uv run --dev pytest tests/ -v
+
+# End-to-end tests (requires API configuration)
+export KIVA_API_BASE="http://your-api-endpoint/v1"
+export KIVA_API_KEY="your-api-key"
+export KIVA_MODEL="your-model-name"
+
+uv run --dev pytest tests/e2e/ -v
+```
+
+See [E2E Testing Guide](docs/e2e-testing-guide.md) for more details.
 
 ## License
 
