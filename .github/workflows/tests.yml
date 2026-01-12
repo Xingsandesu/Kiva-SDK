@@ -42,7 +42,6 @@ jobs:
 
   e2e:
     runs-on: ubuntu-latest
-    if: ${{ secrets.KIVA_API_BASE != '' && secrets.KIVA_API_KEY != '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -52,7 +51,22 @@ jobs:
         run: uv python install 3.12
       - name: Install dependencies
         run: uv sync --dev
+      - name: Check secrets
+        id: e2e_gate
+        env:
+          KIVA_API_BASE: ${{ secrets.KIVA_API_BASE }}
+          KIVA_API_KEY: ${{ secrets.KIVA_API_KEY }}
+        run: |
+          if [ -z "${KIVA_API_BASE}" ] || [ -z "${KIVA_API_KEY}" ]; then
+            echo "run_e2e=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_e2e=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Skip e2e (missing secrets)
+        if: ${{ steps.e2e_gate.outputs.run_e2e != 'true' }}
+        run: echo "E2E skipped: missing KIVA_API_BASE/KIVA_API_KEY secrets."
       - name: Pytest (e2e)
+        if: ${{ steps.e2e_gate.outputs.run_e2e == 'true' }}
         env:
           KIVA_API_BASE: ${{ secrets.KIVA_API_BASE }}
           KIVA_API_KEY: ${{ secrets.KIVA_API_KEY }}
