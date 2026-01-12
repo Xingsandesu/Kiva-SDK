@@ -21,6 +21,17 @@ A multi-agent orchestration SDK for building intelligent workflows
 uv add kiva-sdk
 ```
 
+## Setup & Configuration
+
+Before running the SDK, you need to configure your API credentials using environment variables:
+
+```bash
+export KIVA_API_BASE="http://your-api-endpoint/v1"
+export KIVA_API_KEY="your-api-key"
+export KIVA_MODEL="your-model-name"
+```
+
+
 ## Quick Start
 
 ### High-Level API (Simplest)
@@ -157,10 +168,27 @@ async def main():
                 print(event.data["content"], end="", flush=True)
             case "workflow_selected":
                 print(f"\nWorkflow: {event.data['workflow']}")
+                if event.data.get("parallel_strategy") != "none":
+                    print(f"Parallel Strategy: {event.data['parallel_strategy']}")
+                    print(f"Total Instances: {event.data.get('total_instances', 1)}")
             case "agent_start":
                 print(f"\nAgent started: {event.data.get('agent_id')}")
             case "agent_end":
                 print(f"\nAgent finished")
+            # Parallel instance events
+            case "instance_spawn":
+                print(f"\nInstance spawned: {event.data.get('instance_id')}")
+            case "instance_start":
+                print(f"Instance started: {event.data.get('instance_id')}")
+            case "instance_end":
+                print(f"Instance completed: {event.data.get('instance_id')}")
+            case "instance_complete":
+                status = "success" if event.data.get("success") else "failed"
+                print(f"Instance {event.data.get('instance_id')}: {status}")
+            case "parallel_instances_start":
+                print(f"\nStarting {event.data.get('instance_count')} parallel instances")
+            case "parallel_instances_complete":
+                print(f"All parallel instances completed")
             case "final_result":
                 print(f"\n\nResult: {event.data['result']}")
 
@@ -197,18 +225,35 @@ See [Parallel Instances Documentation](docs/parallel-instances.md) for details.
 
 ## Event Types
 
+### Basic Events
+
 | Event | Description |
 |-------|-------------|
 | `token` | Streaming token from LLM |
 | `workflow_selected` | Workflow and complexity determined |
+| `final_result` | Final synthesized result |
+| `error` | Error occurred |
+
+### Single-Agent Events
+
+| Event | Description |
+|-------|-------------|
 | `parallel_start` | Parallel agent execution started |
 | `agent_start` | Individual agent started |
 | `agent_end` | Individual agent completed |
 | `parallel_complete` | All parallel agents finished |
-| `instance_spawn` | Agent instance spawned |
-| `instance_complete` | Agent instance finished |
-| `final_result` | Final synthesized result |
-| `error` | Error occurred |
+
+### Parallel Instance Events
+
+| Event | Description | Data Fields |
+|-------|-------------|-------------|
+| `instance_spawn` | Agent instance created | `instance_id`, `agent_id`, `task` |
+| `instance_start` | Instance beginning execution | `instance_id`, `agent_id`, `task` |
+| `instance_end` | Instance completed task | `instance_id`, `agent_id`, `result` |
+| `instance_complete` | Instance finished (success/error) | `instance_id`, `agent_id`, `success` |
+| `instance_result` | Result from instance execution | `instance_id`, `agent_id`, `result`, `error` |
+| `parallel_instances_start` | Batch of instances starting | `instance_count`, `agent_ids` |
+| `parallel_instances_complete` | Batch of instances finished | `results` (list with `agent_id`, `instance_id`, `success`) |
 
 ## Configuration
 
@@ -230,6 +275,26 @@ async for event in run(
 
 - [AgentRouter - Modular Applications](docs/agent-router.md)
 - [Parallel Agent Instances](docs/parallel-instances.md)
+- [Execution Output Patterns](docs/execution-outputs.md)
+- [E2E Testing Guide](docs/e2e-testing-guide.md)
+
+## Testing
+
+The SDK includes comprehensive unit and end-to-end tests:
+
+```bash
+# Unit tests (no API required)
+uv run --dev pytest tests/ -v
+
+# End-to-end tests (requires API configuration)
+export KIVA_API_BASE="http://your-api-endpoint/v1"
+export KIVA_API_KEY="your-api-key"
+export KIVA_MODEL="your-model-name"
+
+uv run --dev pytest tests/e2e/ -v
+```
+
+See [E2E Testing Guide](docs/e2e-testing-guide.md) for more details.
 
 ## License
 

@@ -56,8 +56,12 @@ def _route_with_instances(state: OrchestratorState) -> list[Send] | str:
     parallel_strategy = state.get("parallel_strategy", "none")
     workflow = state.get("workflow_override") or state.get("workflow", "router")
 
-    # For simple routing without parallelization
-    if parallel_strategy == "none" or workflow == "router":
+    # For simple routing without parallelization, delegate to workflow
+    if parallel_strategy == "none":
+        return route_to_workflow(state)
+
+    # Router workflow always handles its own execution
+    if workflow == "router":
         return route_to_workflow(state)
 
     # For fan_out or map_reduce, use Send to spawn instances
@@ -67,12 +71,10 @@ def _route_with_instances(state: OrchestratorState) -> list[Send] | str:
 
     sends = []
     execution_id = state.get("execution_id", "")
-    agents = state.get("agents", [])
 
     from kiva.workflows.utils import (
         create_instance_context,
         generate_instance_id,
-        get_agent_by_id,
     )
 
     for assignment in task_assignments:
@@ -81,12 +83,8 @@ def _route_with_instances(state: OrchestratorState) -> list[Send] | str:
         instances = assignment.get("instances", 1)
         base_context = assignment.get("instance_context", {})
 
-        # Verify agent exists
-        agent = get_agent_by_id(agents, agent_id)
-        if agent is None:
-            continue
-
-        # Create Send for each instance
+        # Create Send for each instance (even if agent doesn't exist)
+        # The execute_instance node will handle missing agents gracefully
         for i in range(instances):
             instance_id = generate_instance_id(execution_id, agent_id, i)
             context = create_instance_context(instance_id, agent_id, task, base_context)
@@ -103,7 +101,7 @@ def _route_with_instances(state: OrchestratorState) -> list[Send] | str:
             )
             sends.append(Send("execute_instance", instance_state))
 
-    # If no valid sends, fall back to workflow routing
+    # If no sends created, fall back to workflow routing
     if not sends:
         return route_to_workflow(state)
 

@@ -75,14 +75,43 @@ The planner generates task assignments with instance configuration:
 
 Instance execution emits specific events for monitoring:
 
-| Event Type | Description |
-|------------|-------------|
-| `instance_spawn` | Instance created and starting |
-| `instance_start` | Instance beginning task execution |
-| `instance_end` | Instance completed task |
-| `instance_complete` | Instance finished (success or error) |
-| `parallel_instances_start` | Batch of instances starting |
-| `parallel_instances_complete` | Batch of instances finished |
+### Instance Lifecycle Events
+
+| Event Type | Description | Data Fields |
+|------------|-------------|-------------|
+| `instance_spawn` | Instance created and starting | `instance_id`, `agent_id`, `task`, `execution_id` |
+| `instance_start` | Instance beginning task execution | `instance_id`, `agent_id`, `task`, `execution_id` |
+| `instance_end` | Instance completed task | `instance_id`, `agent_id`, `result`, `execution_id` |
+| `instance_complete` | Instance finished (success or error) | `instance_id`, `agent_id`, `success`, `execution_id` |
+| `instance_result` | Result from instance execution | `instance_id`, `agent_id`, `result`, `error`, `execution_id` |
+
+### Batch Events
+
+| Event Type | Description | Data Fields |
+|------------|-------------|-------------|
+| `parallel_instances_start` | Batch of instances starting | `instance_count`, `agent_ids`, `execution_id` |
+| `parallel_instances_complete` | Batch of instances finished | `results` (list with `agent_id`, `instance_id`, `success`), `execution_id` |
+
+### Event Flow Example
+
+```
+workflow_selected (parallel_strategy: fan_out, total_instances: 3)
+  └─> parallel_instances_start (instance_count: 3)
+        ├─> instance_spawn (instance_id: exec-abc-search-i0-xyz)
+        │     └─> instance_start
+        │           └─> instance_end (result: "...")
+        │                 └─> instance_complete (success: true)
+        ├─> instance_spawn (instance_id: exec-abc-search-i1-xyz)
+        │     └─> instance_start
+        │           └─> instance_end (result: "...")
+        │                 └─> instance_complete (success: true)
+        └─> instance_spawn (instance_id: exec-abc-search-i2-xyz)
+              └─> instance_start
+                    └─> instance_end (result: "...")
+                          └─> instance_complete (success: true)
+  └─> parallel_instances_complete (results: [...])
+        └─> final_result
+```
 
 ## Configuration
 
@@ -166,3 +195,36 @@ class PlanningResult(TypedDict, total=False):
 2. **Design for independence**: Ensure subtasks don't depend on each other
 3. **Handle partial failures**: Some instances may fail while others succeed
 4. **Monitor instance events**: Track individual instance progress for debugging
+
+## Rich Console Display
+
+When using `run_with_console()`, parallel instances are displayed with:
+
+- **Workflow Info Panel**: Shows parallel strategy and total instance count
+- **Agent Instances Table**: Displays each instance with:
+  - Agent ID
+  - Instance ID (shortened)
+  - Status: `SPAWNED` → `RUNNING` → `DONE` or `ERROR`
+  - Task/Result preview
+
+Example display:
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Workflow Selected                         │
+├─────────────────────────────────────────────────────────────┤
+│ Workflow          │ SUPERVISOR                               │
+│ Complexity        │ medium                                   │
+│ Parallel Strategy │ FAN_OUT                                  │
+│ Total Instances   │ 3                                        │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│                 Agent Instances Execution                    │
+├──────────────┬──────────┬───────────┬───────────────────────┤
+│ Agent        │ Instance │ Status    │ Task / Result         │
+├──────────────┼──────────┼───────────┼───────────────────────┤
+│ search_agent │ xyz12345 │ [v] DONE  │ Results for AI...     │
+│ search_agent │ abc67890 │ [~] RUNNING│ Search blockchain... │
+│ search_agent │ def11111 │ [+] SPAWNED│ Search quantum...    │
+└──────────────┴──────────┴───────────┴───────────────────────┘
+```
