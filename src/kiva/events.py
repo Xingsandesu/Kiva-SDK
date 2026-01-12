@@ -4,14 +4,26 @@ This module defines the StreamEvent dataclass used for real-time event
 streaming during orchestration execution.
 
 Event Types:
-    - token: Streaming token from LLM response
-    - workflow_selected: Workflow type and complexity determined
-    - parallel_start: Parallel agent execution initiated
-    - agent_start: Individual agent execution started
-    - agent_end: Individual agent execution completed
-    - parallel_complete: All parallel agents finished
-    - final_result: Final synthesized result available
-    - error: Error occurred during execution
+    Basic Events:
+        - token: Streaming token from LLM response
+        - workflow_selected: Workflow type and complexity determined
+        - final_result: Final synthesized result available
+        - error: Error occurred during execution
+
+    Single-Agent Events:
+        - parallel_start: Parallel agent execution initiated
+        - agent_start: Individual agent execution started
+        - agent_end: Individual agent execution completed
+        - parallel_complete: All parallel agents finished
+
+    Parallel Instance Events:
+        - instance_spawn: New agent instance created and starting
+        - instance_start: Agent instance beginning task execution
+        - instance_end: Agent instance completed task
+        - instance_complete: Agent instance finished (success or error)
+        - instance_result: Result from an agent instance execution
+        - parallel_instances_start: Batch of instances starting execution
+        - parallel_instances_complete: Batch of instances finished execution
 """
 
 from dataclasses import asdict, dataclass

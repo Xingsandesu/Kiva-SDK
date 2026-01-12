@@ -25,7 +25,8 @@ class KivaLiveRenderer:
     """Dynamic live renderer for Kiva orchestration visualization.
 
     Manages the visual state and rendering of orchestration progress,
-    including phase indicators, agent status tables, and result panels.
+    including phase indicators, agent status tables, instance tracking,
+    and result panels.
     """
 
     AGENT_COLORS = ["cyan", "magenta", "yellow", "green", "blue", "red"]
@@ -37,10 +38,13 @@ class KivaLiveRenderer:
         self.workflow_info: dict = {}
         self.task_assignments: list = []
         self.agent_states: dict[str, dict] = {}
+        self.instance_states: dict[str, dict] = {}  # Track individual instances
         self.final_result: str | None = None
         self.citations: list = []
         self.phase = "initializing"
         self.color_index = 0
+        self.parallel_strategy: str = "none"
+        self.total_instances: int = 0
 
     def _get_agent_color(self, agent_id: str) -> str:
         """Get the assigned color for an agent."""
@@ -141,6 +145,16 @@ class KivaLiveRenderer:
             table.add_row(
                 "Tasks", Text(str(len(data["task_assignments"])), style="cyan")
             )
+        if "parallel_strategy" in data and data["parallel_strategy"] != "none":
+            table.add_row(
+                "Parallel Strategy",
+                Text(data["parallel_strategy"].upper(), style="bold green"),
+            )
+        if "total_instances" in data and data["total_instances"] > 1:
+            table.add_row(
+                "Total Instances",
+                Text(str(data["total_instances"]), style="bold cyan"),
+            )
         return table
 
     def _render_workflow_info(self) -> Panel | None:
@@ -159,45 +173,106 @@ class KivaLiveRenderer:
             complexity, "white"
         )
         table.add_row("Complexity", Text(complexity, style=complexity_style))
+
+        # Show parallel strategy if not "none"
+        if self.parallel_strategy and self.parallel_strategy != "none":
+            table.add_row(
+                "Parallel Strategy",
+                Text(self.parallel_strategy.upper(), style="bold green"),
+            )
+        if self.total_instances > 1:
+            table.add_row(
+                "Total Instances",
+                Text(str(self.total_instances), style="bold cyan"),
+            )
+
         return Panel(
             table, title="[blue]Workflow Selected[/]", border_style="blue", box=ROUNDED
         )
 
     def _render_agents_status(self) -> Panel | None:
-        """Render the agent status table."""
-        if not self.agent_states:
+        """Render the agent status table with instance support."""
+        # Filter out hidden agent states (used only for color mapping in parallel mode)
+        visible_agent_states = {
+            k: v for k, v in self.agent_states.items()
+            if not v.get("_hidden", False)
+        }
+
+        if not visible_agent_states and not self.instance_states:
             return None
+
         table = Table(box=ROUNDED, border_style="green", show_lines=True)
         table.add_column("Agent", style="bold")
+        table.add_column("Instance", justify="center")
         table.add_column("Status", justify="center")
         table.add_column("Task / Result", overflow="fold")
-        for agent_id, state in self.agent_states.items():
+
+        # Render regular agent states (only when not using parallel instances)
+        for agent_id, state in visible_agent_states.items():
             color = state.get("color", "white")
             status = state.get("status", "pending")
             task = state.get("task", "")
             result = state.get("result", "")
-            if status == "pending":
-                status_text = Text("[ ] PENDING", style="dim")
-            elif status == "running":
-                status_text = Text("[~] RUNNING", style=f"bold {color}")
-            elif status == "completed":
-                status_text = Text("[v] DONE", style="bold green")
-            elif status == "error":
-                status_text = Text("[x] ERROR", style="bold red")
-            else:
-                status_text = Text(status, style="dim")
+
+            status_text = self._get_status_text(status, color)
+
             if status == "completed" and result:
                 content = result[:80] + "..." if len(result) > 80 else result
             else:
                 content = task[:60] + "..." if len(task) > 60 else task
+
             table.add_row(
                 Text(agent_id, style=f"bold {color}"),
+                Text("-", style="dim"),
                 status_text,
                 Text(content, style="white" if status == "completed" else "dim"),
             )
-        return Panel(
-            table, title="[green]Agent Execution[/]", border_style="green", box=ROUNDED
-        )
+
+        # Render instance states (for parallel instances)
+        for instance_id, state in self.instance_states.items():
+            agent_id = state.get("agent_id", "unknown")
+            color = state.get("color", "white")
+            status = state.get("status", "pending")
+            task = state.get("task", "")
+            result = state.get("result", "")
+
+            status_text = self._get_status_text(status, color)
+
+            if status == "completed" and result:
+                content = result[:80] + "..." if len(result) > 80 else result
+            else:
+                content = task[:60] + "..." if len(task) > 60 else task
+
+            # Show shortened instance ID
+            short_instance = instance_id.split("-")[-1][:8] if "-" in instance_id else instance_id[:8]
+
+            table.add_row(
+                Text(agent_id, style=f"bold {color}"),
+                Text(short_instance, style="dim cyan"),
+                status_text,
+                Text(content, style="white" if status == "completed" else "dim"),
+            )
+
+        title = "[green]Agent Execution[/]"
+        if self.instance_states:
+            title = "[green]Agent Instances Execution[/]"
+
+        return Panel(table, title=title, border_style="green", box=ROUNDED)
+
+    def _get_status_text(self, status: str, color: str) -> Text:
+        """Get formatted status text."""
+        if status == "pending":
+            return Text("[ ] PENDING", style="dim")
+        elif status == "spawned":
+            return Text("[+] SPAWNED", style=f"bold {color}")
+        elif status == "running":
+            return Text("[~] RUNNING", style=f"bold {color}")
+        elif status == "completed":
+            return Text("[v] DONE", style="bold green")
+        elif status == "error":
+            return Text("[x] ERROR", style="bold red")
+        else:
+            return Text(status, style="dim")
 
     def _render_final_result(self) -> Panel | None:
         """Render the final result panel with citations."""
@@ -316,21 +391,41 @@ class KivaLiveRenderer:
             self.phase = "analyzing"
 
     def on_workflow_selected(
-        self, workflow: str, complexity: str, task_assignments: list
+        self, workflow: str, complexity: str, task_assignments: list,
+        parallel_strategy: str = "none", total_instances: int = 1
     ):
         """Handle workflow selection event."""
         self.workflow_info = {"workflow": workflow, "complexity": complexity}
         self.task_assignments = task_assignments
+        self.parallel_strategy = parallel_strategy
+        self.total_instances = total_instances
         self.token_buffer = ""
         self.phase = "executing"
-        for i, task in enumerate(task_assignments):
-            agent_id = task.get("agent_id", f"agent_{i}")
-            self.agent_states[agent_id] = {
-                "status": "pending",
-                "task": task.get("task", ""),
-                "result": "",
-                "color": self._assign_agent_color(agent_id),
-            }
+
+        # Only populate agent_states if NOT using parallel instances
+        # When using fan_out/map_reduce, instance_states will be populated by instance events
+        if parallel_strategy == "none":
+            for i, task in enumerate(task_assignments):
+                agent_id = task.get("agent_id", f"agent_{i}")
+                self.agent_states[agent_id] = {
+                    "status": "pending",
+                    "task": task.get("task", ""),
+                    "result": "",
+                    "color": self._assign_agent_color(agent_id),
+                    "instances": task.get("instances", 1),
+                }
+        else:
+            # For parallel strategies, just pre-assign colors for agents
+            for i, task in enumerate(task_assignments):
+                agent_id = task.get("agent_id", f"agent_{i}")
+                if agent_id not in self.agent_states:
+                    # Only store color mapping, don't create display entry
+                    self._assign_agent_color(agent_id)
+                    # Store in a temporary dict for color lookup
+                    self.agent_states[agent_id] = {
+                        "color": self.AGENT_COLORS[(self.color_index - 1) % len(self.AGENT_COLORS)],
+                        "_hidden": True,  # Mark as hidden, won't be rendered
+                    }
 
     def on_parallel_start(self, agent_ids: list):
         """Handle parallel execution start event."""
@@ -368,6 +463,86 @@ class KivaLiveRenderer:
     def on_parallel_complete(self):
         """Handle parallel execution completion event."""
         pass
+
+    def on_instance_spawn(self, instance_id: str, agent_id: str, task: str):
+        """Handle instance spawn event."""
+        color = self._get_agent_color(agent_id)
+        if not color or color == "white":
+            color = self._assign_agent_color(agent_id)
+        self.instance_states[instance_id] = {
+            "agent_id": agent_id,
+            "status": "spawned",
+            "task": task,
+            "result": "",
+            "color": color,
+        }
+
+    def on_instance_start(self, instance_id: str, agent_id: str, task: str):
+        """Handle instance start event."""
+        if instance_id in self.instance_states:
+            self.instance_states[instance_id]["status"] = "running"
+            if task:
+                self.instance_states[instance_id]["task"] = task
+        else:
+            color = self._get_agent_color(agent_id)
+            if not color or color == "white":
+                color = self._assign_agent_color(agent_id)
+            self.instance_states[instance_id] = {
+                "agent_id": agent_id,
+                "status": "running",
+                "task": task,
+                "result": "",
+                "color": color,
+            }
+
+    def on_instance_end(self, instance_id: str, agent_id: str, result: str):
+        """Handle instance end event."""
+        if instance_id in self.instance_states:
+            self.instance_states[instance_id]["status"] = "completed"
+            self.instance_states[instance_id]["result"] = result
+
+    def on_instance_complete(self, instance_id: str, agent_id: str, success: bool):
+        """Handle instance complete event."""
+        if instance_id in self.instance_states:
+            self.instance_states[instance_id]["status"] = "completed" if success else "error"
+
+    def on_instance_result(self, instance_id: str, agent_id: str, result: str, error: str | None):
+        """Handle instance result event."""
+        if instance_id in self.instance_states:
+            self.instance_states[instance_id]["status"] = "error" if error else "completed"
+            self.instance_states[instance_id]["result"] = error or result
+        else:
+            color = self._get_agent_color(agent_id)
+            if not color or color == "white":
+                color = self._assign_agent_color(agent_id)
+            self.instance_states[instance_id] = {
+                "agent_id": agent_id,
+                "status": "error" if error else "completed",
+                "task": "",
+                "result": error or result,
+                "color": color,
+            }
+
+    def on_parallel_instances_start(self, instance_count: int, agent_ids: list):
+        """Handle parallel instances start event."""
+        # Don't create visible agent_states entries for parallel instances
+        # The instance_states will be populated by instance_spawn events
+        for agent_id in agent_ids:
+            if agent_id not in self.agent_states:
+                # Only store color mapping
+                color = self._assign_agent_color(agent_id)
+                self.agent_states[agent_id] = {
+                    "color": color,
+                    "_hidden": True,
+                }
+
+    def on_parallel_instances_complete(self, results: list):
+        """Handle parallel instances complete event."""
+        for result in results:
+            instance_id = result.get("instance_id")
+            success = result.get("success", True)
+            if instance_id and instance_id in self.instance_states:
+                self.instance_states[instance_id]["status"] = "completed" if success else "error"
 
     def on_synthesize_start(self):
         """Handle synthesis phase start."""
@@ -443,6 +618,8 @@ async def run_with_console(
                     event.data["workflow"],
                     event.data.get("complexity", ""),
                     event.data.get("task_assignments", []),
+                    event.data.get("parallel_strategy", "none"),
+                    event.data.get("total_instances", 1),
                 )
             elif event.type == "parallel_start":
                 renderer.on_parallel_start(event.data["agent_ids"])
@@ -466,6 +643,58 @@ async def run_with_console(
                     s["status"] == "completed" for s in renderer.agent_states.values()
                 )
                 if all_done and renderer.phase == "executing":
+                    renderer.on_synthesize_start()
+            # Parallel instance events
+            elif event.type == "instance_spawn":
+                renderer.on_instance_spawn(
+                    event.data.get("instance_id", ""),
+                    event.data.get("agent_id", ""),
+                    event.data.get("task", ""),
+                )
+            elif event.type == "instance_start":
+                renderer.on_instance_start(
+                    event.data.get("instance_id", ""),
+                    event.data.get("agent_id", ""),
+                    event.data.get("task", ""),
+                )
+            elif event.type == "instance_end":
+                renderer.on_instance_end(
+                    event.data.get("instance_id", ""),
+                    event.data.get("agent_id", ""),
+                    event.data.get("result", ""),
+                )
+            elif event.type == "instance_complete":
+                renderer.on_instance_complete(
+                    event.data.get("instance_id", ""),
+                    event.data.get("agent_id", ""),
+                    event.data.get("success", True),
+                )
+            elif event.type == "instance_result":
+                renderer.on_instance_result(
+                    event.data.get("instance_id", ""),
+                    event.data.get("agent_id", ""),
+                    event.data.get("result", ""),
+                    event.data.get("error"),
+                )
+            elif event.type == "parallel_instances_start":
+                renderer.on_parallel_instances_start(
+                    event.data.get("instance_count", 0),
+                    event.data.get("agent_ids", []),
+                )
+            elif event.type == "parallel_instances_complete":
+                renderer.on_parallel_instances_complete(
+                    event.data.get("results", []),
+                )
+                # Check if all instances are done
+                all_instances_done = all(
+                    s["status"] in ("completed", "error")
+                    for s in renderer.instance_states.values()
+                ) if renderer.instance_states else True
+                all_agents_done = all(
+                    s["status"] in ("completed", "error")
+                    for s in renderer.agent_states.values()
+                ) if renderer.agent_states else True
+                if all_instances_done and all_agents_done and renderer.phase == "executing":
                     renderer.on_synthesize_start()
             elif event.type == "final_result":
                 renderer.on_final_result(
