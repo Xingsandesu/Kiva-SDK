@@ -2,7 +2,7 @@
 
 This module provides the main entry point for running multi-agent orchestration.
 The run() function is an async generator that yields StreamEvent objects for
-real-time monitoring of execution progress.
+real-time monitoring of execution progress, including instance-level events.
 
 Example:
     >>> async for event in run(prompt="...", agents=[...]):
@@ -34,7 +34,8 @@ async def run(
     """Run multi-agent orchestration and yield streaming events.
 
     This is the main entry point for the Kiva SDK. It analyzes the task,
-    selects an appropriate workflow, executes agents, and synthesizes results.
+    selects an appropriate workflow, optionally spawns multiple agent
+    instances for parallel execution, and synthesizes results.
 
     Args:
         prompt: User input or task description.
@@ -48,7 +49,13 @@ async def run(
         max_parallel_agents: Maximum concurrent agent executions. Defaults to 5.
 
     Yields:
-        StreamEvent objects representing execution progress.
+        StreamEvent objects representing execution progress, including:
+        - workflow_selected: Planning complete, workflow chosen
+        - instance_spawn: New agent instance spawned
+        - instance_complete: Agent instance finished
+        - parallel_instances_start/complete: Batch instance events
+        - agent_start/end: Individual agent events
+        - final_result: Synthesized result
 
     Raises:
         ConfigurationError: If agents list is empty or agents lack ainvoke method.
@@ -100,10 +107,16 @@ async def run(
         "workflow": "",
         "task_assignments": [],
         "final_result": None,
+        "parallel_strategy": "none",
+        "total_instances": 0,
+        "instance_contexts": [],
     }
 
+    # Pass agents via configurable for Send-based instance execution
+    config = {"configurable": {"agents": agents}}
+
     async for chunk in graph.astream(
-        initial_state, stream_mode=["messages", "updates", "custom"]
+        initial_state, config=config, stream_mode=["messages", "updates", "custom"]
     ):
         async for event in _process_stream_chunk(chunk, execution_id):
             yield event
@@ -152,6 +165,29 @@ async def _process_stream_chunk(
                 "result": data.get("result"),
             }
             event_data = {"result": result_data, "execution_id": execution_id}
+        elif event_type in (
+            "instance_spawn",
+            "instance_complete",
+            "instance_start",
+            "instance_end",
+        ):
+            # Instance-level events
+            event_data = {
+                "instance_id": data.get("instance_id"),
+                "agent_id": data.get("agent_id"),
+                "execution_id": execution_id,
+                "task": data.get("task"),
+                "result": data.get("result"),
+                "success": data.get("success"),
+            }
+        elif event_type in ("parallel_instances_start", "parallel_instances_complete"):
+            # Batch instance events
+            event_data = {
+                "instance_count": data.get("instance_count"),
+                "agent_ids": data.get("agent_ids"),
+                "results": data.get("results"),
+                "execution_id": execution_id,
+            }
         else:
             event_data = {**data, "execution_id": execution_id}
 
@@ -185,9 +221,28 @@ async def _process_node_update(
                     "complexity": node_data.get("complexity"),
                     "execution_id": execution_id,
                     "task_assignments": node_data.get("task_assignments", []),
+                    "parallel_strategy": node_data.get("parallel_strategy", "none"),
+                    "total_instances": node_data.get("total_instances", 1),
                 },
                 timestamp=time.time(),
             )
+
+    elif node_name == "execute_instance":
+        # Instance execution results
+        if results := node_data.get("agent_results"):
+            for result in results:
+                yield StreamEvent(
+                    type="instance_result",
+                    data={
+                        "instance_id": result.get("instance_id"),
+                        "agent_id": result.get("agent_id"),
+                        "result": result.get("result"),
+                        "error": result.get("error"),
+                        "execution_id": execution_id,
+                    },
+                    timestamp=time.time(),
+                    agent_id=result.get("agent_id"),
+                )
 
     elif node_name in ("router_workflow", "supervisor_workflow", "parliament_workflow"):
         # Events are emitted via emit_event() during workflow execution

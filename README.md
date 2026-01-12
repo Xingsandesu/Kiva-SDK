@@ -8,6 +8,7 @@ A multi-agent orchestration SDK for building intelligent workflows
 
 - **Three Workflow Patterns**: Router (simple), Supervisor (parallel), and Parliament (deliberative)
 - **Automatic Complexity Analysis**: Intelligent workflow selection based on task complexity
+- **Parallel Agent Instances**: Spawn multiple instances of the same agent for parallel subtask execution
 - **Modular Architecture**: AgentRouter for organizing agents across multiple files
 - **Streaming Events**: Real-time execution monitoring with structured events
 - **Rich Console Output**: Beautiful terminal visualization (optional)
@@ -98,7 +99,6 @@ kiva.run("What's the weather in Tokyo? Calculate 15 * 8")
 ```
 
 See [AgentRouter Documentation](docs/agent-router.md) for more details.
-```
 
 ### Mid-Level API (Async with Console)
 
@@ -173,10 +173,27 @@ asyncio.run(main())
 Routes tasks to a single most appropriate agent. Best for simple, single-domain queries.
 
 ### Supervisor Workflow
-Coordinates multiple agents executing in parallel. Ideal for multi-faceted tasks that can be decomposed into independent subtasks.
+Coordinates multiple agents executing in parallel. Supports spawning multiple instances of the same agent for parallel subtask processing. Ideal for multi-faceted tasks that can be decomposed into independent subtasks.
 
 ### Parliament Workflow
 Implements iterative deliberation with conflict resolution. Designed for complex reasoning tasks requiring consensus or validation.
+
+## Parallel Agent Instances
+
+Kiva can spawn multiple instances of the same agent definition for parallel execution:
+
+```python
+# The planner automatically decides when to use parallel instances
+# For example, this task might spawn 3 instances of a search agent:
+kiva.run("Search for information about AI, blockchain, and quantum computing")
+```
+
+Each instance has:
+- Isolated context/scratchpad
+- Independent execution
+- Results aggregated automatically
+
+See [Parallel Instances Documentation](docs/parallel-instances.md) for details.
 
 ## Event Types
 
@@ -188,6 +205,8 @@ Implements iterative deliberation with conflict resolution. Designed for complex
 | `agent_start` | Individual agent started |
 | `agent_end` | Individual agent completed |
 | `parallel_complete` | All parallel agents finished |
+| `instance_spawn` | Agent instance spawned |
+| `instance_complete` | Agent instance finished |
 | `final_result` | Final synthesized result |
 | `error` | Error occurred |
 
@@ -202,10 +221,15 @@ async for event in run(
     base_url="...",                 # API base URL
     workflow_override="supervisor", # Force specific workflow
     max_iterations=10,              # Parliament max iterations
-    max_parallel_agents=5,          # Max concurrent agents
+    max_parallel_agents=5,          # Max concurrent agents/instances
 ):
     ...
 ```
+
+## Documentation
+
+- [AgentRouter - Modular Applications](docs/agent-router.md)
+- [Parallel Agent Instances](docs/parallel-instances.md)
 
 ## License
 

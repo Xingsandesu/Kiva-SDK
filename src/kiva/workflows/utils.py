@@ -2,15 +2,18 @@
 
 This module provides common helper functions used across different workflow
 types (router, supervisor, parliament) to avoid code duplication and ensure
-consistent behavior.
+consistent behavior. Includes support for agent instance management.
 
 Functions:
     get_agent_by_id: Locate an agent instance by its identifier.
     generate_invocation_id: Create unique IDs for agent invocations.
+    generate_instance_id: Create unique IDs for agent instances.
     emit_event: Send streaming events with proper error handling.
     extract_content: Parse agent response content from various formats.
     execute_single_agent: Run a single agent with event emission.
+    execute_agent_instance: Run an agent instance with isolated context.
     make_error_result: Create standardized error result dictionaries.
+    create_instance_context: Create isolated context for an agent instance.
 """
 
 import logging
@@ -75,6 +78,51 @@ def generate_invocation_id(execution_id: str, agent_id: str) -> str:
         A unique string in format "{execution_prefix}-{agent_id}-{random_hex}".
     """
     return f"{execution_id[:8]}-{agent_id}-{uuid.uuid4().hex[:8]}"
+
+
+def generate_instance_id(execution_id: str, agent_id: str, instance_num: int) -> str:
+    """Generate a unique instance ID for a parallel agent instance.
+
+    Args:
+        execution_id: The parent execution's identifier.
+        agent_id: The agent definition's identifier.
+        instance_num: The instance number (0-indexed).
+
+    Returns:
+        A unique string in format "{execution_prefix}-{agent_id}-i{num}-{random}".
+    """
+    return f"{execution_id[:8]}-{agent_id}-i{instance_num}-{uuid.uuid4().hex[:6]}"
+
+
+def create_instance_context(
+    instance_id: str,
+    agent_id: str,
+    task: str,
+    base_context: dict | None = None,
+) -> dict:
+    """Create an isolated context for an agent instance.
+
+    Each instance gets its own scratchpad/memory that is independent
+    from other instances of the same agent.
+
+    Args:
+        instance_id: Unique identifier for this instance.
+        agent_id: The agent definition ID.
+        task: The specific task for this instance.
+        base_context: Optional base context to extend.
+
+    Returns:
+        Dictionary containing the instance's isolated context.
+    """
+    return {
+        "instance_id": instance_id,
+        "agent_id": agent_id,
+        "task": task,
+        "scratchpad": [],
+        "memory": {},
+        "created_at": time.time(),
+        **(base_context or {}),
+    }
 
 
 def emit_event(event: dict) -> None:
@@ -167,6 +215,93 @@ async def execute_single_agent(
             "error": str(error),
             "original_error_type": type(e).__name__,
             "recovery_suggestion": error.recovery_suggestion,
+        }
+
+
+async def execute_agent_instance(
+    agent: Any,
+    instance_id: str,
+    agent_id: str,
+    task: str,
+    context: dict,
+    execution_id: str = "",
+) -> dict[str, Any]:
+    """Execute an agent instance with isolated context.
+
+    Similar to execute_single_agent but includes instance-specific context
+    and tracking for parallel execution scenarios.
+
+    Args:
+        agent: The agent instance to invoke.
+        instance_id: Unique identifier for this specific instance.
+        agent_id: The agent definition ID.
+        task: The task/prompt to send to the agent.
+        context: Instance-specific context/scratchpad.
+        execution_id: Parent execution ID for correlation.
+
+    Returns:
+        Dictionary with instance_id, agent_id, result, context, and optional error.
+    """
+    try:
+        emit_event(
+            {
+                "type": "instance_start",
+                "instance_id": instance_id,
+                "agent_id": agent_id,
+                "execution_id": execution_id,
+                "task": task,
+                "timestamp": time.time(),
+            }
+        )
+
+        # Include context in the task if available
+        task_with_context = task
+        if context.get("scratchpad"):
+            task_with_context = f"{task}\n\nContext from previous steps:\n" + "\n".join(
+                str(s) for s in context["scratchpad"]
+            )
+
+        result = await agent.ainvoke(
+            {"messages": [{"role": "user", "content": task_with_context}]}
+        )
+        content = extract_content(result)
+
+        # Update context with result
+        updated_context = {
+            **context,
+            "last_result": content,
+            "completed_at": time.time(),
+        }
+        updated_context["scratchpad"].append({"task": task, "result": content})
+
+        emit_event(
+            {
+                "type": "instance_end",
+                "instance_id": instance_id,
+                "agent_id": agent_id,
+                "execution_id": execution_id,
+                "result": content,
+                "timestamp": time.time(),
+            }
+        )
+
+        return {
+            "instance_id": instance_id,
+            "agent_id": agent_id,
+            "result": content,
+            "context": updated_context,
+        }
+
+    except Exception as e:
+        error = wrap_agent_error(e, agent_id, task)
+        return {
+            "instance_id": instance_id,
+            "agent_id": agent_id,
+            "result": None,
+            "error": str(error),
+            "original_error_type": type(e).__name__,
+            "recovery_suggestion": error.recovery_suggestion,
+            "context": context,
         }
 
 
