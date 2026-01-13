@@ -2436,3 +2436,328 @@ class TestMaxIterationsProperty:
                 assert not should_continue_workflow
             else:
                 assert should_continue_workflow
+
+
+class TestCustomVerifiersProperty:
+    """Property-based tests for custom verifier execution.
+
+    Feature: output-verification-agent
+    """
+
+    @given(
+        verifier_name=st.text(min_size=1, max_size=30).filter(lambda x: x.strip()),
+        priority=st.integers(min_value=-100, max_value=100),
+        task=st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
+        output=st.text(min_size=1, max_size=200).filter(lambda x: x.strip()),
+    )
+    @settings(max_examples=100)
+    def test_custom_verifier_is_registered_and_executed(
+        self,
+        verifier_name: str,
+        priority: int,
+        task: str,
+        output: str,
+    ):
+        """Custom Verifiers Are Executed.
+
+        For any registered custom verifier, when verification is performed,
+        the custom verifier SHALL be called with the correct arguments
+        (task, output, context) and its result SHALL be included in the
+        aggregated verification results.
+
+        Feature: output-verification-agent
+        """
+        from kiva import Kiva
+        from kiva.verification import VerificationResult, VerificationStatus
+
+        kiva = Kiva(base_url="http://test", api_key="test", model="test")
+
+        # Track what arguments the verifier receives
+        captured_args: list[tuple[str, str, dict | None]] = []
+
+        @kiva.verifier(verifier_name, priority=priority)
+        def custom_verifier(
+            t: str, o: str, context: dict | None = None
+        ) -> VerificationResult:
+            captured_args.append((t, o, context))
+            return VerificationResult(
+                status=VerificationStatus.PASSED,
+                validator_name=verifier_name,
+            )
+
+        # Verify the verifier was registered
+        assert len(kiva._verifiers) == 1
+        registered = kiva._verifiers[0]
+        assert registered.name == verifier_name
+        assert registered.priority == priority
+
+        # Execute the verifier through the registered wrapper
+        result = registered.verify(task, output, None)
+
+        # Verify the verifier was called with correct arguments
+        assert len(captured_args) == 1
+        assert captured_args[0][0] == task
+        assert captured_args[0][1] == output
+        assert captured_args[0][2] is None
+
+        # Verify the result is properly structured
+        assert isinstance(result, VerificationResult)
+        assert result.status == VerificationStatus.PASSED
+        assert result.validator_name == verifier_name
+
+    @given(
+        num_verifiers=st.integers(min_value=1, max_value=5),
+        priorities=st.lists(
+            st.integers(min_value=-100, max_value=100),
+            min_size=1,
+            max_size=5,
+        ),
+    )
+    @settings(max_examples=100)
+    def test_multiple_verifiers_are_all_executed(
+        self,
+        num_verifiers: int,
+        priorities: list[int],
+    ):
+        """Multiple custom verifiers are all executed.
+
+        When multiple verifiers are registered, ALL verifiers SHALL be
+        executed and their results SHALL be aggregated.
+
+        Feature: output-verification-agent
+        """
+        from kiva import Kiva
+        from kiva.verification import VerificationResult, VerificationStatus
+
+        kiva = Kiva(base_url="http://test", api_key="test", model="test")
+
+        # Adjust priorities list to match num_verifiers
+        actual_priorities = (priorities * num_verifiers)[:num_verifiers]
+        executed_verifiers: list[str] = []
+
+        # Register multiple verifiers
+        for i in range(num_verifiers):
+            name = f"verifier_{i}"
+            prio = actual_priorities[i]
+
+            @kiva.verifier(name, priority=prio)
+            def make_verifier(
+                t: str, o: str, context: dict | None = None, idx: int = i
+            ) -> VerificationResult:
+                executed_verifiers.append(f"verifier_{idx}")
+                return VerificationResult(
+                    status=VerificationStatus.PASSED,
+                    validator_name=f"verifier_{idx}",
+                )
+
+        # Verify all verifiers were registered
+        assert len(kiva._verifiers) == num_verifiers
+
+        # Execute all verifiers
+        for verifier in kiva._verifiers:
+            verifier.verify("test task", "test output", None)
+
+        # Verify all verifiers were executed
+        assert len(executed_verifiers) == num_verifiers
+
+    @given(
+        priorities=st.lists(
+            st.integers(min_value=-100, max_value=100),
+            min_size=2,
+            max_size=5,
+            unique=True,
+        ),
+    )
+    @settings(max_examples=100)
+    def test_verifiers_sorted_by_priority(
+        self,
+        priorities: list[int],
+    ):
+        """Verifiers are sorted by priority (highest first).
+
+        When get_verifiers() is called, verifiers SHALL be returned
+        sorted by priority in descending order.
+
+        Feature: output-verification-agent
+        """
+        from kiva import Kiva
+        from kiva.verification import VerificationResult, VerificationStatus
+
+        kiva = Kiva(base_url="http://test", api_key="test", model="test")
+
+        # Register verifiers with different priorities
+        for i, prio in enumerate(priorities):
+
+            @kiva.verifier(f"verifier_{i}", priority=prio)
+            def verifier_func(
+                t: str, o: str, context: dict | None = None
+            ) -> VerificationResult:
+                return VerificationResult(status=VerificationStatus.PASSED)
+
+        # Get sorted verifiers
+        sorted_verifiers = kiva.get_verifiers()
+
+        # Verify they are sorted by priority (highest first)
+        for i in range(len(sorted_verifiers) - 1):
+            assert sorted_verifiers[i].priority >= sorted_verifiers[i + 1].priority
+
+    @given(
+        task=st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
+        output=st.text(min_size=1, max_size=200).filter(lambda x: x.strip()),
+        context_keys=st.lists(
+            st.text(min_size=1, max_size=20).filter(lambda x: x.strip()),
+            max_size=3,
+            unique=True,
+        ),
+    )
+    @settings(max_examples=100)
+    def test_verifier_receives_context(
+        self,
+        task: str,
+        output: str,
+        context_keys: list[str],
+    ):
+        """Custom verifier receives context parameter.
+
+        The custom verifier function SHALL receive the optional context
+        parameter when provided.
+
+        Feature: output-verification-agent
+        """
+        from kiva import Kiva
+        from kiva.verification import VerificationResult, VerificationStatus
+
+        kiva = Kiva(base_url="http://test", api_key="test", model="test")
+
+        received_context: list[dict | None] = []
+
+        @kiva.verifier("context_checker")
+        def check_context(
+            t: str, o: str, context: dict | None = None
+        ) -> VerificationResult:
+            received_context.append(context)
+            return VerificationResult(status=VerificationStatus.PASSED)
+
+        # Create context dict
+        test_context = {key: f"value_{i}" for i, key in enumerate(context_keys)}
+
+        # Execute verifier with context
+        verifier = kiva._verifiers[0]
+        verifier.verify(task, output, test_context if context_keys else None)
+
+        # Verify context was received
+        assert len(received_context) == 1
+        if context_keys:
+            assert received_context[0] == test_context
+        else:
+            assert received_context[0] is None
+
+    @given(
+        should_pass=st.booleans(),
+        rejection_reason=st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
+        suggestions=st.lists(
+            st.text(min_size=1, max_size=50).filter(lambda x: x.strip()),
+            max_size=3,
+        ),
+    )
+    @settings(max_examples=100)
+    def test_verifier_result_is_returned(
+        self,
+        should_pass: bool,
+        rejection_reason: str,
+        suggestions: list[str],
+    ):
+        """Custom verifier result is properly returned.
+
+        The custom verifier function SHALL return a VerificationResult
+        and that result SHALL be properly returned from the verify() call.
+
+        Feature: output-verification-agent
+        """
+        from kiva import Kiva
+        from kiva.verification import VerificationResult, VerificationStatus
+
+        kiva = Kiva(base_url="http://test", api_key="test", model="test")
+
+        expected_status = (
+            VerificationStatus.PASSED if should_pass else VerificationStatus.FAILED
+        )
+
+        @kiva.verifier("result_checker")
+        def check_result(
+            t: str, o: str, context: dict | None = None
+        ) -> VerificationResult:
+            return VerificationResult(
+                status=expected_status,
+                rejection_reason=None if should_pass else rejection_reason,
+                improvement_suggestions=[] if should_pass else suggestions,
+                validator_name="result_checker",
+            )
+
+        # Execute verifier
+        verifier = kiva._verifiers[0]
+        result = verifier.verify("task", "output", None)
+
+        # Verify result matches expected
+        assert result.status == expected_status
+        if should_pass:
+            assert result.rejection_reason is None
+            assert result.improvement_suggestions == []
+        else:
+            assert result.rejection_reason == rejection_reason
+            assert result.improvement_suggestions == suggestions
+        assert result.validator_name == "result_checker"
+
+    def test_verifier_decorator_preserves_function_metadata(self):
+        """Verifier decorator preserves function metadata.
+
+        The @kiva.verifier decorator SHALL store verifier metadata
+        on the decorated function for introspection.
+
+        Feature: output-verification-agent
+        """
+        from kiva import Kiva
+        from kiva.verification import VerificationResult, VerificationStatus
+
+        kiva = Kiva(base_url="http://test", api_key="test", model="test")
+
+        @kiva.verifier("my_verifier", priority=5)
+        def my_custom_verifier(
+            task: str, output: str, context: dict | None = None
+        ) -> VerificationResult:
+            """My custom verifier docstring."""
+            return VerificationResult(status=VerificationStatus.PASSED)
+
+        # Verify metadata is stored on function
+        assert hasattr(my_custom_verifier, "_verifier_name")
+        assert my_custom_verifier._verifier_name == "my_verifier"
+        assert hasattr(my_custom_verifier, "_verifier_priority")
+        assert my_custom_verifier._verifier_priority == 5
+
+        # Verify function is still callable
+        result = my_custom_verifier("task", "output")
+        assert result.status == VerificationStatus.PASSED
+
+    def test_verifier_uses_function_name_when_name_not_provided(self):
+        """Verifier uses function name when name parameter not provided.
+
+        When the name parameter is not provided to @kiva.verifier,
+        the decorator SHALL use the function's __name__ as the verifier name.
+
+        Feature: output-verification-agent
+        """
+        from kiva import Kiva
+        from kiva.verification import VerificationResult, VerificationStatus
+
+        kiva = Kiva(base_url="http://test", api_key="test", model="test")
+
+        @kiva.verifier()  # No name provided
+        def auto_named_verifier(
+            task: str, output: str, context: dict | None = None
+        ) -> VerificationResult:
+            return VerificationResult(status=VerificationStatus.PASSED)
+
+        # Verify the function name was used
+        assert len(kiva._verifiers) == 1
+        assert kiva._verifiers[0].name == "auto_named_verifier"
+        assert auto_named_verifier._verifier_name == "auto_named_verifier"

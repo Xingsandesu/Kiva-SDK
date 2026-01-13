@@ -46,7 +46,7 @@ Example:
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from langchain.agents import create_agent
 from langchain_core.tools import tool as lc_tool
@@ -54,6 +54,40 @@ from langchain_openai import ChatOpenAI
 
 if TYPE_CHECKING:
     from kiva.router import AgentRouter
+    from kiva.verification import VerificationResult
+
+
+@dataclass
+class RegisteredVerifier:
+    """Internal verifier wrapper for storing verifier metadata.
+
+    Attributes:
+        name: Unique identifier for the verifier.
+        priority: Execution priority (higher = earlier execution).
+        func: The verifier function.
+    """
+
+    name: str
+    priority: int
+    func: Callable[..., "VerificationResult"]
+
+    def verify(
+        self,
+        task: str,
+        output: str,
+        context: dict[str, Any] | None = None,
+    ) -> "VerificationResult":
+        """Execute the verifier function.
+
+        Args:
+            task: The task that was assigned to the worker.
+            output: The output produced by the worker.
+            context: Optional additional context for verification.
+
+        Returns:
+            VerificationResult with status and details.
+        """
+        return self.func(task, output, context)
 
 
 @dataclass
@@ -110,6 +144,7 @@ class Kiva:
         self.model = model
         self.temperature = temperature
         self._agents: list[Agent] = []
+        self._verifiers: list[RegisteredVerifier] = []
 
     def _create_model(self) -> ChatOpenAI:
         """Create a ChatOpenAI instance with configured parameters."""
@@ -188,6 +223,86 @@ class Kiva:
             return obj
 
         return decorator
+
+    def verifier(
+        self,
+        name: str | None = None,
+        priority: int = 0,
+    ) -> Callable[
+        [Callable[..., "VerificationResult"]], Callable[..., "VerificationResult"]
+    ]:
+        """Decorator to register a custom verifier.
+
+        Custom verifiers are executed during output verification to provide
+        additional validation logic beyond the default LLM-based verification.
+
+        Args:
+            name: Unique identifier for the verifier. If not provided,
+                uses the function name.
+            priority: Execution priority. Higher values execute earlier.
+                Defaults to 0.
+
+        Returns:
+            Decorator function that registers the verifier.
+
+        Example:
+            Basic verifier::
+
+                @kiva.verifier("length_check")
+                def check_length(
+                    task: str, output: str, context: dict | None = None
+                ) -> VerificationResult:
+                    '''Check that output meets minimum length.'''
+                    if len(output) < 10:
+                        return VerificationResult(
+                            status=VerificationStatus.FAILED,
+                            rejection_reason="Output too short",
+                            improvement_suggestions=["Provide more detail"],
+                        )
+                    return VerificationResult(status=VerificationStatus.PASSED)
+
+            Verifier with priority::
+
+                @kiva.verifier("critical_check", priority=10)
+                def critical_check(
+                    task: str, output: str, context: dict | None = None
+                ) -> VerificationResult:
+                    '''Critical check that runs first.'''
+                    # This runs before lower priority verifiers
+                    return VerificationResult(status=VerificationStatus.PASSED)
+        """
+
+        def decorator(
+            func: Callable[..., "VerificationResult"],
+        ) -> Callable[..., "VerificationResult"]:
+            verifier_name = name if name is not None else func.__name__
+            # Store metadata on the function for introspection
+            func._verifier_name = verifier_name  # type: ignore[attr-defined]
+            func._verifier_priority = priority  # type: ignore[attr-defined]
+
+            registered = RegisteredVerifier(
+                name=verifier_name,
+                priority=priority,
+                func=func,
+            )
+            self._verifiers.append(registered)
+            return func
+
+        return decorator
+
+    def get_verifiers(self) -> list[RegisteredVerifier]:
+        """Get all registered verifiers sorted by priority (highest first).
+
+        Returns:
+            List of RegisteredVerifier instances sorted by priority in
+            descending order (higher priority verifiers first).
+
+        Example:
+            >>> verifiers = kiva.get_verifiers()
+            >>> for v in verifiers:
+            ...     print(f"{v.name}: priority {v.priority}")
+        """
+        return sorted(self._verifiers, key=lambda v: v.priority, reverse=True)
 
     def add_agent(self, name: str, description: str, tools: list) -> "Kiva":
         """Add an agent with an explicit tools list.
