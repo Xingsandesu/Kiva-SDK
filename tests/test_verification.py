@@ -14,6 +14,7 @@ from hypothesis import strategies as st
 
 from kiva.verification import (
     AgentMessage,
+    FinalResultVerifier,
     LLMVerificationResult,
     RetryContext,
     VerificationResult,
@@ -700,3 +701,620 @@ class TestVerifierProtocol:
         assert len(results) == 1
         assert results[0].status == VerificationStatus.FAILED
         assert results[0].validator_name == "length_check"
+
+
+class TestFinalResultVerifier:
+    """Unit tests for FinalResultVerifier class."""
+
+    def test_create_verifier_with_defaults(self):
+        """Test creating a FinalResultVerifier with default settings."""
+        verifier = FinalResultVerifier()
+        assert verifier.model_name == "gpt-4o"
+        assert verifier.api_key is None
+        assert verifier.base_url is None
+        assert verifier.custom_verifiers == []
+
+    def test_create_verifier_with_custom_settings(self):
+        """Test creating a FinalResultVerifier with custom settings."""
+        verifier = FinalResultVerifier(
+            model_name="gpt-3.5-turbo",
+            api_key="test-key",
+            base_url="https://api.example.com",
+        )
+        assert verifier.model_name == "gpt-3.5-turbo"
+        assert verifier.api_key == "test-key"
+        assert verifier.base_url == "https://api.example.com"
+
+    def test_aggregate_results_all_passed(self):
+        """Test aggregation when all results pass."""
+        verifier = FinalResultVerifier()
+        results = [
+            VerificationResult(status=VerificationStatus.PASSED, confidence=0.9),
+            VerificationResult(status=VerificationStatus.PASSED, confidence=0.8),
+        ]
+        aggregated = verifier._aggregate_results(results)
+        assert aggregated.status == VerificationStatus.PASSED
+        assert abs(aggregated.confidence - 0.85) < 0.0001
+        assert aggregated.validator_name == "final_aggregate"
+
+    def test_aggregate_results_one_failed(self):
+        """Test aggregation when one result fails."""
+        verifier = FinalResultVerifier()
+        results = [
+            VerificationResult(status=VerificationStatus.PASSED, confidence=0.9),
+            VerificationResult(
+                status=VerificationStatus.FAILED,
+                rejection_reason="Incomplete answer",
+                improvement_suggestions=["Add more details"],
+                confidence=0.5,
+            ),
+        ]
+        aggregated = verifier._aggregate_results(results)
+        assert aggregated.status == VerificationStatus.FAILED
+        assert "Incomplete answer" in aggregated.rejection_reason
+        assert "Add more details" in aggregated.improvement_suggestions
+        assert aggregated.validator_name == "final_aggregate"
+
+    def test_aggregate_results_empty(self):
+        """Test aggregation with empty results list."""
+        verifier = FinalResultVerifier()
+        aggregated = verifier._aggregate_results([])
+        assert aggregated.status == VerificationStatus.PASSED
+        assert aggregated.validator_name == "final_aggregate"
+
+    def test_custom_verifier_execution(self):
+        """Test that custom verifiers are executed with original prompt."""
+
+        class CustomVerifier:
+            def verify(
+                self, task: str, output: str, context: dict | None = None
+            ) -> VerificationResult:
+                # Check if the output mentions the key topic from the prompt
+                if "capital" in task.lower() and "paris" not in output.lower():
+                    return VerificationResult(
+                        status=VerificationStatus.FAILED,
+                        rejection_reason="Missing capital city in response",
+                        validator_name="custom",
+                    )
+                return VerificationResult(
+                    status=VerificationStatus.PASSED,
+                    validator_name="custom",
+                )
+
+        verifier = FinalResultVerifier(custom_verifiers=[CustomVerifier()])
+        results = verifier._run_custom_verifiers(
+            original_prompt="What is the capital of France?",
+            final_result="France is a country in Europe.",
+        )
+        assert len(results) == 1
+        assert results[0].status == VerificationStatus.FAILED
+        assert results[0].rejection_reason == "Missing capital city in response"
+
+    def test_custom_verifier_passes(self):
+        """Test custom verifier that passes."""
+
+        class CustomVerifier:
+            def verify(
+                self, task: str, output: str, context: dict | None = None
+            ) -> VerificationResult:
+                if "capital" in task.lower() and "paris" in output.lower():
+                    return VerificationResult(
+                        status=VerificationStatus.PASSED,
+                        validator_name="custom",
+                    )
+                return VerificationResult(
+                    status=VerificationStatus.FAILED,
+                    rejection_reason="Missing expected content",
+                    validator_name="custom",
+                )
+
+        verifier = FinalResultVerifier(custom_verifiers=[CustomVerifier()])
+        results = verifier._run_custom_verifiers(
+            original_prompt="What is the capital of France?",
+            final_result="The capital of France is Paris.",
+        )
+        assert len(results) == 1
+        assert results[0].status == VerificationStatus.PASSED
+
+    def test_custom_verifier_exception_handling(self):
+        """Test that custom verifier exceptions are handled gracefully."""
+
+        class FailingVerifier:
+            _verifier_name = "failing_verifier"
+
+            def verify(
+                self, task: str, output: str, context: dict | None = None
+            ) -> VerificationResult:
+                raise ValueError("Verifier crashed!")
+
+        verifier = FinalResultVerifier(custom_verifiers=[FailingVerifier()])
+        results = verifier._run_custom_verifiers(
+            original_prompt="Test prompt",
+            final_result="Test result",
+        )
+        assert len(results) == 1
+        assert results[0].status == VerificationStatus.SKIPPED
+        assert "Custom verifier error" in results[0].rejection_reason
+        assert results[0].validator_name == "failing_verifier"
+
+
+class TestFinalResultVerificationProperty:
+    """Property-based tests for Final Result Verification.
+
+    Feature: output-verification-agent, Property 2: Final Result Verification
+    Against Original Prompt
+    """
+
+    @given(
+        original_prompt=st.text(min_size=1, max_size=200).filter(lambda x: x.strip()),
+        final_result=st.text(min_size=1, max_size=500).filter(lambda x: x.strip()),
+    )
+    @settings(max_examples=100)
+    def test_final_verification_uses_original_prompt_not_task_assignment(
+        self,
+        original_prompt: str,
+        final_result: str,
+    ):
+        """Final Result Verification Against Original Prompt.
+
+        For any synthesize_results execution that completes, the
+        FinalResultVerifier SHALL verify the final result against the user's
+        original prompt (state.prompt), ensuring the complete user requirement
+        is satisfied.
+
+        Feature: output-verification-agent
+        """
+        # Create a custom verifier that captures what prompt was passed
+        captured_prompts = []
+
+        class PromptCapturingVerifier:
+            def verify(
+                self, task: str, output: str, context: dict | None = None
+            ) -> VerificationResult:
+                captured_prompts.append(task)
+                return VerificationResult(status=VerificationStatus.PASSED)
+
+        verifier = FinalResultVerifier(
+            custom_verifiers=[PromptCapturingVerifier()]
+        )
+
+        # Run custom verifiers (synchronous part we can test)
+        verifier._run_custom_verifiers(
+            original_prompt=original_prompt,
+            final_result=final_result,
+        )
+
+        # Verify the original_prompt was passed to the verifier
+        assert len(captured_prompts) == 1
+        assert captured_prompts[0] == original_prompt
+
+    @given(
+        original_prompt=st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
+        final_result=st.text(min_size=1, max_size=200).filter(lambda x: x.strip()),
+        worker_results=st.lists(
+            st.fixed_dictionaries({
+                "agent_id": st.text(min_size=1, max_size=20).filter(lambda x: x.strip()),
+                "result": st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
+            }),
+            min_size=0,
+            max_size=3,
+        ),
+    )
+    @settings(max_examples=100)
+    def test_final_verification_result_always_has_required_fields(
+        self,
+        original_prompt: str,
+        final_result: str,
+        worker_results: list[dict],
+    ):
+        """Final verification always produces properly structured results.
+
+        For any final verification operation, the result SHALL contain all
+        required fields: status, rejection_reason, improvement_suggestions,
+        field_errors.
+
+        Feature: output-verification-agent
+        """
+        verifier = FinalResultVerifier()
+
+        # Test with custom verifier that always passes
+        class AlwaysPassVerifier:
+            def verify(
+                self, task: str, output: str, context: dict | None = None
+            ) -> VerificationResult:
+                return VerificationResult(status=VerificationStatus.PASSED)
+
+        verifier_with_custom = FinalResultVerifier(
+            custom_verifiers=[AlwaysPassVerifier()]
+        )
+        results = verifier_with_custom._run_custom_verifiers(
+            original_prompt, final_result
+        )
+
+        for result in results:
+            # Verify all required fields exist
+            assert hasattr(result, "status")
+            assert hasattr(result, "rejection_reason")
+            assert hasattr(result, "improvement_suggestions")
+            assert hasattr(result, "field_errors")
+            assert isinstance(result.status, VerificationStatus)
+            assert isinstance(result.improvement_suggestions, list)
+            assert isinstance(result.field_errors, dict)
+
+    @given(
+        original_prompt=st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
+        final_result=st.text(min_size=1, max_size=200).filter(lambda x: x.strip()),
+    )
+    @settings(max_examples=100)
+    def test_final_verification_aggregation_preserves_failure_info(
+        self,
+        original_prompt: str,
+        final_result: str,
+    ):
+        """Aggregation preserves failure information from custom verifiers.
+
+        For any final verification with failing custom verifiers, the
+        aggregated result SHALL contain the rejection reasons and improvement
+        suggestions from all failed verifiers.
+
+        Feature: output-verification-agent
+        """
+        rejection_reason = f"Failed for prompt: {original_prompt[:20]}"
+        suggestion = "Try a different approach"
+
+        class FailingVerifier:
+            def verify(
+                self, task: str, output: str, context: dict | None = None
+            ) -> VerificationResult:
+                return VerificationResult(
+                    status=VerificationStatus.FAILED,
+                    rejection_reason=rejection_reason,
+                    improvement_suggestions=[suggestion],
+                    validator_name="test_verifier",
+                )
+
+        verifier = FinalResultVerifier(custom_verifiers=[FailingVerifier()])
+        results = verifier._run_custom_verifiers(original_prompt, final_result)
+        aggregated = verifier._aggregate_results(results)
+
+        assert aggregated.status == VerificationStatus.FAILED
+        assert rejection_reason in aggregated.rejection_reason
+        assert suggestion in aggregated.improvement_suggestions
+
+    @given(
+        original_prompt=st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
+        final_result=st.text(min_size=1, max_size=200).filter(lambda x: x.strip()),
+        num_verifiers=st.integers(min_value=1, max_value=5),
+    )
+    @settings(max_examples=100)
+    def test_all_custom_verifiers_are_executed(
+        self,
+        original_prompt: str,
+        final_result: str,
+        num_verifiers: int,
+    ):
+        """All registered custom verifiers are executed.
+
+        For any FinalResultVerifier with N custom verifiers, all N verifiers
+        SHALL be executed and their results included in the aggregation.
+
+        Feature: output-verification-agent
+        """
+        execution_count = []
+
+        class CountingVerifier:
+            def __init__(self, verifier_id: int):
+                self.verifier_id = verifier_id
+
+            def verify(
+                self, task: str, output: str, context: dict | None = None
+            ) -> VerificationResult:
+                execution_count.append(self.verifier_id)
+                return VerificationResult(status=VerificationStatus.PASSED)
+
+        verifiers = [CountingVerifier(i) for i in range(num_verifiers)]
+        verifier = FinalResultVerifier(custom_verifiers=verifiers)
+
+        results = verifier._run_custom_verifiers(original_prompt, final_result)
+
+        # All verifiers should have been executed
+        assert len(results) == num_verifiers
+        assert len(execution_count) == num_verifiers
+        # Each verifier should have been called exactly once
+        assert sorted(execution_count) == list(range(num_verifiers))
+
+
+
+class TestWorkerRetryContextProperty:
+    """Property-based tests for Worker Retry Context completeness.
+
+    Feature: output-verification-agent
+    """
+
+    @given(
+        iteration=st.integers(min_value=0, max_value=10),
+        max_iterations=st.integers(min_value=1, max_value=10),
+        assigned_task=st.text(min_size=1, max_size=200).filter(lambda x: x.strip()),
+        previous_outputs=st.lists(
+            st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
+            min_size=0,
+            max_size=5,
+        ),
+        rejection_reasons=st.lists(
+            st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
+            min_size=0,
+            max_size=5,
+        ),
+    )
+    @settings(max_examples=100)
+    def test_retry_context_contains_assigned_task_not_original_prompt(
+        self,
+        iteration: int,
+        max_iterations: int,
+        assigned_task: str,
+        previous_outputs: list[str],
+        rejection_reasons: list[str],
+    ):
+        """Worker Retry Context Is Complete.
+
+        For any failed Worker verification that triggers a retry, the retry
+        context SHALL contain: the assigned task (not original prompt), all
+        previous outputs from that Worker, all previous rejection reasons,
+        and the complete task history.
+
+        Feature: output-verification-agent
+        """
+        # Create previous rejections from rejection reasons
+        previous_rejections = [
+            VerificationResult(
+                status=VerificationStatus.FAILED,
+                rejection_reason=reason,
+                improvement_suggestions=[f"Suggestion for: {reason[:20]}"],
+            )
+            for reason in rejection_reasons
+        ]
+
+        # Create task history
+        task_history = [
+            {"agent_id": f"agent_{i}", "task": f"Task {i}"}
+            for i in range(len(previous_outputs))
+        ]
+
+        # Create RetryContext
+        context = RetryContext(
+            iteration=iteration,
+            max_iterations=max_iterations,
+            previous_outputs=previous_outputs,
+            previous_rejections=previous_rejections,
+            task_history=task_history,
+            original_task=assigned_task,  # This is the ASSIGNED task, not user prompt
+        )
+
+        # Verify the context contains all required fields
+        assert context.original_task == assigned_task
+        assert context.iteration == iteration
+        assert context.max_iterations == max_iterations
+        assert len(context.previous_outputs) == len(previous_outputs)
+        assert len(context.previous_rejections) == len(rejection_reasons)
+        assert len(context.task_history) == len(task_history)
+
+        # Verify all previous outputs are preserved
+        for i, output in enumerate(previous_outputs):
+            assert context.previous_outputs[i] == output
+
+        # Verify all rejection reasons are preserved
+        for i, reason in enumerate(rejection_reasons):
+            assert context.previous_rejections[i].rejection_reason == reason
+
+    @given(
+        assigned_task=st.text(min_size=1, max_size=200).filter(lambda x: x.strip()),
+        original_prompt=st.text(min_size=1, max_size=200).filter(lambda x: x.strip()),
+        num_failed_agents=st.integers(min_value=1, max_value=3),
+    )
+    @settings(max_examples=100)
+    def test_retry_context_uses_assigned_task_not_user_prompt(
+        self,
+        assigned_task: str,
+        original_prompt: str,
+        num_failed_agents: int,
+    ):
+        """Retry context uses assigned task, not user's original prompt.
+
+        The retry context SHALL contain the specific task assigned to the
+        Worker (task_assignment.task), NOT the user's original prompt.
+
+        Feature: output-verification-agent
+        """
+        from kiva.nodes.verify import _build_retry_context
+
+        # Create failed agents with assigned tasks
+        failed_agents = [
+            {
+                "agent_id": f"agent_{i}",
+                "assigned_task": assigned_task,
+                "verification": VerificationResult(
+                    status=VerificationStatus.FAILED,
+                    rejection_reason=f"Failed reason {i}",
+                ),
+                "previous_output": f"Output {i}",
+            }
+            for i in range(num_failed_agents)
+        ]
+
+        # Create agent results
+        agent_results = [
+            {"agent_id": f"agent_{i}", "result": f"Output {i}"}
+            for i in range(num_failed_agents)
+        ]
+
+        # Create task assignments
+        task_assignments = [
+            {"agent_id": f"agent_{i}", "task": assigned_task}
+            for i in range(num_failed_agents)
+        ]
+
+        # Build retry context
+        context = _build_retry_context(
+            iteration=0,
+            max_iterations=3,
+            failed_agents=failed_agents,
+            agent_results=agent_results,
+            task_assignments=task_assignments,
+            original_prompt=original_prompt,  # This should NOT be used as the task
+        )
+
+        # The original_task in context should be the assigned_task, not original_prompt
+        assert context.original_task == assigned_task
+        # Unless they happen to be the same, they should be different
+        if assigned_task != original_prompt:
+            assert context.original_task != original_prompt
+
+    @given(
+        iteration=st.integers(min_value=0, max_value=5),
+        max_iterations=st.integers(min_value=1, max_value=10),
+        num_outputs=st.integers(min_value=1, max_value=5),
+        num_rejections=st.integers(min_value=1, max_value=5),
+    )
+    @settings(max_examples=100)
+    def test_retry_context_preserves_all_history(
+        self,
+        iteration: int,
+        max_iterations: int,
+        num_outputs: int,
+        num_rejections: int,
+    ):
+        """Retry context preserves complete history.
+
+        For any retry operation, the context SHALL include all previous
+        outputs and all previous rejection reasons.
+
+        Feature: output-verification-agent
+        """
+        # Generate test data
+        previous_outputs = [f"Output {i}" for i in range(num_outputs)]
+        previous_rejections = [
+            VerificationResult(
+                status=VerificationStatus.FAILED,
+                rejection_reason=f"Rejection {i}",
+                improvement_suggestions=[f"Suggestion {i}"],
+            )
+            for i in range(num_rejections)
+        ]
+        task_history = [
+            {"agent_id": f"agent_{i}", "task": f"Task {i}"}
+            for i in range(num_outputs)
+        ]
+
+        context = RetryContext(
+            iteration=iteration,
+            max_iterations=max_iterations,
+            previous_outputs=previous_outputs,
+            previous_rejections=previous_rejections,
+            task_history=task_history,
+            original_task="Test task",
+        )
+
+        # Verify all history is preserved
+        assert len(context.previous_outputs) == num_outputs
+        assert len(context.previous_rejections) == num_rejections
+        assert len(context.task_history) == num_outputs
+
+        # Verify content integrity
+        for i in range(num_outputs):
+            assert context.previous_outputs[i] == f"Output {i}"
+            assert context.task_history[i]["agent_id"] == f"agent_{i}"
+
+        for i in range(num_rejections):
+            assert context.previous_rejections[i].rejection_reason == f"Rejection {i}"
+
+    @given(
+        assigned_task=st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
+        rejection_reasons=st.lists(
+            st.text(min_size=1, max_size=50).filter(lambda x: x.strip()),
+            min_size=1,
+            max_size=3,
+        ),
+        suggestions=st.lists(
+            st.text(min_size=1, max_size=50).filter(lambda x: x.strip()),
+            min_size=0,
+            max_size=3,
+        ),
+    )
+    @settings(max_examples=100)
+    def test_retry_prompt_contains_task_and_rejections(
+        self,
+        assigned_task: str,
+        rejection_reasons: list[str],
+        suggestions: list[str],
+    ):
+        """Retry prompt contains assigned task and rejection context.
+
+        The retry prompt SHALL contain the original assigned task, explicit
+        instructions to try a different approach, and the previous rejection
+        reasons.
+
+        Feature: output-verification-agent
+        """
+        from kiva.nodes.verify import build_retry_prompt
+
+        # Create rejections with suggestions
+        previous_rejections = [
+            VerificationResult(
+                status=VerificationStatus.FAILED,
+                rejection_reason=reason,
+                improvement_suggestions=suggestions[:1] if suggestions else [],
+            )
+            for reason in rejection_reasons
+        ]
+
+        context = RetryContext(
+            iteration=1,
+            max_iterations=3,
+            previous_outputs=["Previous output"],
+            previous_rejections=previous_rejections,
+            task_history=[],
+            original_task=assigned_task,
+        )
+
+        prompt = build_retry_prompt(context)
+
+        # Verify prompt contains required elements
+        assert assigned_task in prompt
+        assert "DIFFERENT approach" in prompt or "different" in prompt.lower()
+
+        # Verify all rejection reasons are included
+        for reason in rejection_reasons:
+            assert reason in prompt
+
+    @given(
+        iteration=st.integers(min_value=0, max_value=10),
+        max_iterations=st.integers(min_value=1, max_value=10),
+    )
+    @settings(max_examples=100)
+    def test_retry_context_iteration_tracking(
+        self,
+        iteration: int,
+        max_iterations: int,
+    ):
+        """Retry context correctly tracks iteration numbers.
+
+        The retry context SHALL correctly track the current iteration and
+        maximum iterations to prevent infinite retry loops.
+
+        Feature: output-verification-agent
+        """
+        context = RetryContext(
+            iteration=iteration,
+            max_iterations=max_iterations,
+            previous_outputs=[],
+            previous_rejections=[],
+            task_history=[],
+            original_task="Test task",
+        )
+
+        assert context.iteration == iteration
+        assert context.max_iterations == max_iterations
+
+        # Verify we can determine if more retries are allowed
+        can_retry = context.iteration < context.max_iterations
+        assert can_retry == (iteration < max_iterations)
