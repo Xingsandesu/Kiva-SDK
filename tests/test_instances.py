@@ -318,9 +318,7 @@ class TestSupervisorWithInstances:
             "instance_contexts": [],
         }
         
-        result = asyncio.get_event_loop().run_until_complete(
-            supervisor_workflow(state)
-        )
+        result = asyncio.run(supervisor_workflow(state))
         
         # Should have results for all instances
         assert len(result["agent_results"]) == num_instances
@@ -364,9 +362,7 @@ class TestSupervisorWithInstances:
             "instance_contexts": [],
         }
         
-        result = asyncio.get_event_loop().run_until_complete(
-            supervisor_workflow(state)
-        )
+        result = asyncio.run(supervisor_workflow(state))
         
         # Should be limited to max_parallel
         assert len(result["agent_results"]) <= max_parallel

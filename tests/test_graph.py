@@ -5,7 +5,7 @@ Tests for build_orchestrator_graph function and graph structure.
 
 from langgraph.graph.state import CompiledStateGraph
 
-from kiva import build_orchestrator_graph, get_graph_edges, get_graph_nodes
+from kiva.graph import build_orchestrator_graph, get_graph_edges, get_graph_nodes
 
 
 class TestBuildOrchestratorGraph:

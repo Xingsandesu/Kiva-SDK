@@ -115,15 +115,19 @@ workflow_selected (parallel_strategy: fan_out, total_instances: 3)
 
 ## Configuration
 
-Control parallelization via `max_parallel_agents`:
+Control parallelization via the Kiva client:
 
 ```python
-async for event in run(
-    prompt="Search for 10 topics",
-    agents=[search_agent],
-    max_parallel_agents=5,  # Limit concurrent instances
-):
-    print(event.type)
+from kiva import Kiva
+
+kiva = Kiva(base_url="...", api_key="...", model="gpt-4o")
+
+@kiva.agent("search", "Searches for information")
+def search(query: str) -> str:
+    return f"Results for: {query}"
+
+# The planner automatically decides parallelization
+result = kiva.run("Search for 10 different topics")
 ```
 
 ## Example

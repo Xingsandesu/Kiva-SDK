@@ -5,6 +5,7 @@ These tests validate the correctness properties defined in the design document.
 
 import asyncio
 
+import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
@@ -94,7 +95,7 @@ class TestRouterWorkflowProperty:
         }
 
         # Run the router workflow
-        result = asyncio.get_event_loop().run_until_complete(router_workflow(state))
+        result = asyncio.run(router_workflow(state))
 
         # Property: Router should return exactly one result
         assert "agent_results" in result
@@ -122,7 +123,7 @@ class TestRouterWorkflowProperty:
             "prompt": "Test prompt",
         }
 
-        result = asyncio.get_event_loop().run_until_complete(router_workflow(state))
+        result = asyncio.run(router_workflow(state))
 
         # Property: Result should contain the agent's response
         assert len(result["agent_results"]) == 1
@@ -167,7 +168,7 @@ class TestSupervisorWorkflowProperty:
         }
 
         # Run the supervisor workflow
-        result = asyncio.get_event_loop().run_until_complete(supervisor_workflow(state))
+        result = asyncio.run(supervisor_workflow(state))
 
         # Property: Supervisor should return results for all agents
         assert "agent_results" in result
@@ -204,7 +205,7 @@ class TestSupervisorWorkflowProperty:
             "prompt": "Test prompt",
         }
 
-        result = asyncio.get_event_loop().run_until_complete(supervisor_workflow(state))
+        result = asyncio.run(supervisor_workflow(state))
 
         # Property: All results should be collected
         result_agent_ids = {r["agent_id"] for r in result["agent_results"]}
@@ -255,9 +256,7 @@ class TestParliamentWorkflowProperty:
         iterations_run = 0
 
         for _ in range(max_iterations + 2):  # Run more than max to test limit
-            result = asyncio.get_event_loop().run_until_complete(
-                parliament_workflow(current_state)
-            )
+            result = asyncio.run(parliament_workflow(current_state))
             iterations_run = result.get("iteration", iterations_run)
 
             # Check if we should stop
@@ -295,7 +294,7 @@ class TestParliamentWorkflowProperty:
             "agent_results": [],
         }
 
-        result = asyncio.get_event_loop().run_until_complete(parliament_workflow(state))
+        result = asyncio.run(parliament_workflow(state))
 
         # Property: Should signal synthesis when at max iterations
         assert result.get("workflow") == "synthesize"
