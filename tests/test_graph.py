@@ -26,6 +26,9 @@ class TestBuildOrchestratorGraph:
             "parliament_workflow",
             "execute_instance",
             "synthesize_results",
+            "verify_worker_output",
+            "verify_final_result",
+            "worker_retry",
         }
         # CompiledStateGraph stores nodes in its nodes attribute
         actual_nodes = set(graph.nodes.keys()) - {"__start__", "__end__"}
@@ -37,11 +40,11 @@ class TestBuildOrchestratorGraph:
         assert "__start__" in graph.nodes
 
     def test_graph_has_end_node(self):
-        """Test that the graph has proper termination (synthesize_results -> END)."""
+        """Test that the graph has proper termination (verify_final_result -> END)."""
         graph = build_orchestrator_graph()
-        # In LangGraph, END is represented differently - verify synthesize_results exists
+        # In LangGraph, END is represented differently - verify verify_final_result exists
         # and the graph structure is valid (it compiled successfully)
-        assert "synthesize_results" in graph.nodes
+        assert "verify_final_result" in graph.nodes
 
 
 class TestGetGraphNodes:
@@ -61,11 +64,14 @@ class TestGetGraphNodes:
         assert "parliament_workflow" in nodes
         assert "execute_instance" in nodes
         assert "synthesize_results" in nodes
+        assert "verify_worker_output" in nodes
+        assert "verify_final_result" in nodes
+        assert "worker_retry" in nodes
 
     def test_node_count(self):
         """Test that the correct number of nodes is returned."""
         nodes = get_graph_nodes()
-        assert len(nodes) == 6
+        assert len(nodes) == 9
 
 
 class TestGetGraphEdges:
@@ -85,24 +91,29 @@ class TestGetGraphEdges:
         assert ("__start__", "analyze_and_plan") in edges
 
     def test_router_to_synthesize_edge(self):
-        """Test that router_workflow connects to synthesize_results."""
+        """Test that router_workflow connects to verify_worker_output."""
         edges = get_graph_edges()
-        assert ("router_workflow", "synthesize_results") in edges
+        assert ("router_workflow", "verify_worker_output") in edges
 
     def test_supervisor_to_synthesize_edge(self):
-        """Test that supervisor_workflow connects to synthesize_results."""
+        """Test that supervisor_workflow connects to verify_worker_output."""
         edges = get_graph_edges()
-        assert ("supervisor_workflow", "synthesize_results") in edges
+        assert ("supervisor_workflow", "verify_worker_output") in edges
 
     def test_execute_instance_to_synthesize_edge(self):
-        """Test that execute_instance connects to synthesize_results."""
+        """Test that execute_instance connects to verify_worker_output."""
         edges = get_graph_edges()
-        assert ("execute_instance", "synthesize_results") in edges
+        assert ("execute_instance", "verify_worker_output") in edges
 
-    def test_synthesize_to_end_edge(self):
-        """Test that synthesize_results connects to end."""
+    def test_worker_retry_to_verify_edge(self):
+        """Test that worker_retry connects to verify_worker_output."""
         edges = get_graph_edges()
-        assert ("synthesize_results", "__end__") in edges
+        assert ("worker_retry", "verify_worker_output") in edges
+
+    def test_synthesize_to_verify_final_edge(self):
+        """Test that synthesize_results connects to verify_final_result."""
+        edges = get_graph_edges()
+        assert ("synthesize_results", "verify_final_result") in edges
 
 
 class TestGraphStructure:

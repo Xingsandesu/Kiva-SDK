@@ -2,7 +2,8 @@
 
 This module builds the LangGraph state graph that orchestrates multi-agent
 workflows. The graph structure enables automatic workflow selection,
-dynamic agent instance spawning via Send API, and parallel execution.
+dynamic agent instance spawning via Send API, parallel execution, and
+dual-layer verification.
 
 Graph Structure:
     START -> analyze_and_plan -> [conditional routing with Send]
@@ -19,16 +20,49 @@ Graph Structure:
                     +---------------+---------------+
                                     |
                                     v
-                            synthesize_results -> END
+                          verify_worker_output
+                                    |
+                        +-----------+-----------+
+                        |                       |
+                    [passed]               [failed]
+                        |                       |
+                        v                       v
+                synthesize_results         worker_retry
+                        |                       |
+                        v                       |
+                verify_final_result <-----------+
+                        |
+            +-----------+-----------+
+            |                       |
+        [passed]               [failed]
+            |                       |
+            v                       v
+          END              analyze_and_plan (restart)
 
 The Send API enables dynamic fan-out where the planner can spawn N instances
 of the same agent definition, each with isolated context.
+
+Verification Architecture:
+    1. Worker Output Verification: Validates each Worker Agent's output against
+       its assigned task (NOT the user's original prompt).
+    2. Final Result Verification: Validates the synthesized result against the
+       user's original prompt.
+    3. Retry Mechanisms:
+       - Worker level: Retry failed workers with rejection context
+       - Workflow level: Restart entire workflow with different approach
 """
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
-from kiva.nodes import analyze_and_plan, route_to_workflow, synthesize_results
+from kiva.nodes import (
+    analyze_and_plan,
+    route_to_workflow,
+    synthesize_results,
+    verify_final_result,
+    verify_worker_output,
+    worker_retry,
+)
 from kiva.state import AgentInstanceState, OrchestratorState
 from kiva.workflows import (
     parliament_workflow,
@@ -115,18 +149,24 @@ def _collect_instance_results(state: OrchestratorState) -> str:
         state: Current state with accumulated instance results.
 
     Returns:
-        Next node name (synthesize_results).
+        Next node name (verify_worker_output).
     """
-    return "synthesize_results"
+    return "verify_worker_output"
 
 
 def build_orchestrator_graph() -> StateGraph:
     """Build and compile the orchestrator state graph.
 
     Creates a LangGraph StateGraph with nodes for task analysis, workflow
-    execution, instance execution, and result synthesis. The graph uses
-    conditional edges and Send API to route to the appropriate workflow
-    and spawn parallel agent instances.
+    execution, instance execution, result synthesis, and verification. The
+    graph uses conditional edges and Send API to route to the appropriate
+    workflow and spawn parallel agent instances.
+
+    The graph implements a dual-layer verification architecture:
+    1. Worker output verification: Verifies each Worker Agent's output against
+       its assigned task after workflow execution.
+    2. Final result verification: Verifies the synthesized result against the
+       user's original prompt after synthesis.
 
     Returns:
         A compiled StateGraph ready for execution.
@@ -145,6 +185,10 @@ def build_orchestrator_graph() -> StateGraph:
     graph.add_node("parliament_workflow", parliament_workflow)
     graph.add_node("execute_instance", execute_instance_node)
     graph.add_node("synthesize_results", synthesize_results)
+    # Add verification nodes
+    graph.add_node("verify_worker_output", verify_worker_output)
+    graph.add_node("verify_final_result", verify_final_result)
+    graph.add_node("worker_retry", worker_retry)
 
     # Add edges
     graph.add_edge(START, "analyze_and_plan")
@@ -161,21 +205,32 @@ def build_orchestrator_graph() -> StateGraph:
         },
     )
 
-    # Instance execution flows to synthesis
-    graph.add_edge("execute_instance", "synthesize_results")
+    # Instance execution flows to worker verification
+    graph.add_edge("execute_instance", "verify_worker_output")
 
-    # Workflow edges
-    graph.add_edge("router_workflow", "synthesize_results")
-    graph.add_edge("supervisor_workflow", "synthesize_results")
+    # Workflow edges - all workflows flow to worker verification
+    graph.add_edge("router_workflow", "verify_worker_output")
+    graph.add_edge("supervisor_workflow", "verify_worker_output")
     graph.add_conditional_edges(
         "parliament_workflow",
         should_continue_parliament,
         {
-            "synthesize": "synthesize_results",
+            "synthesize": "verify_worker_output",
             "parliament_workflow": "parliament_workflow",
         },
     )
-    graph.add_edge("synthesize_results", END)
+
+    # Worker verification uses Command to route to synthesize or retry
+    # (no explicit edge needed - Command handles routing)
+
+    # Worker retry flows back to worker verification
+    graph.add_edge("worker_retry", "verify_worker_output")
+
+    # Synthesis flows to final verification
+    graph.add_edge("synthesize_results", "verify_final_result")
+
+    # Final verification uses Command to route to END or restart workflow
+    # (no explicit edge needed - Command handles routing)
 
     return graph.compile()
 
@@ -193,6 +248,9 @@ def get_graph_nodes() -> list[str]:
         "parliament_workflow",
         "execute_instance",
         "synthesize_results",
+        "verify_worker_output",
+        "verify_final_result",
+        "worker_retry",
     ]
 
 
@@ -200,14 +258,17 @@ def get_graph_edges() -> list[tuple[str, str]]:
     """Get the list of static edges in the orchestrator graph.
 
     Note: This does not include conditional edges or Send-based edges.
+    Also excludes edges controlled by Command (verify_worker_output and
+    verify_final_result use Command for dynamic routing).
 
     Returns:
         List of (source, target) edge tuples.
     """
     return [
         ("__start__", "analyze_and_plan"),
-        ("router_workflow", "synthesize_results"),
-        ("supervisor_workflow", "synthesize_results"),
-        ("execute_instance", "synthesize_results"),
-        ("synthesize_results", "__end__"),
+        ("router_workflow", "verify_worker_output"),
+        ("supervisor_workflow", "verify_worker_output"),
+        ("execute_instance", "verify_worker_output"),
+        ("worker_retry", "verify_worker_output"),
+        ("synthesize_results", "verify_final_result"),
     ]

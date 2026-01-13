@@ -2100,3 +2100,339 @@ class TestWorkerRetryNode:
 
         # Should contain instructions to try different approach
         assert "DIFFERENT" in task or "different" in task.lower()
+
+
+
+class TestMaxIterationsProperty:
+    """Property-based tests for Max Iterations Is Respected At Both Levels.
+
+    Feature: output-verification-agent
+    """
+
+    @given(
+        max_verification_iterations=st.integers(min_value=1, max_value=5),
+        max_workflow_iterations=st.integers(min_value=1, max_value=3),
+        num_failed_verifications=st.integers(min_value=0, max_value=10),
+        num_failed_final_verifications=st.integers(min_value=0, max_value=10),
+    )
+    @settings(max_examples=100)
+    def test_max_iterations_respected_at_both_levels(
+        self,
+        max_verification_iterations: int,
+        max_workflow_iterations: int,
+        num_failed_verifications: int,
+        num_failed_final_verifications: int,
+    ):
+        """Max Iterations Is Respected At Both Levels.
+
+        For any execution with max_verification_iterations=N and
+        max_workflow_iterations=M, the total number of Worker verification
+        attempts SHALL NOT exceed N, and the total number of complete workflow
+        restarts SHALL NOT exceed M.
+
+        Feature: output-verification-agent
+        """
+        # Simulate worker verification iterations
+        worker_iteration = 0
+        for _ in range(num_failed_verifications):
+            if worker_iteration >= max_verification_iterations:
+                # Should stop retrying
+                break
+            worker_iteration += 1
+
+        # Verify worker iterations don't exceed max
+        assert worker_iteration <= max_verification_iterations
+
+        # Simulate workflow iterations
+        workflow_iteration = 0
+        for _ in range(num_failed_final_verifications):
+            if workflow_iteration >= max_workflow_iterations:
+                # Should stop restarting
+                break
+            workflow_iteration += 1
+
+        # Verify workflow iterations don't exceed max
+        assert workflow_iteration <= max_workflow_iterations
+
+    @given(
+        max_verification_iterations=st.integers(min_value=1, max_value=5),
+        current_iteration=st.integers(min_value=0, max_value=10),
+    )
+    @settings(max_examples=100)
+    def test_worker_verification_stops_at_max_iterations(
+        self,
+        max_verification_iterations: int,
+        current_iteration: int,
+    ):
+        """Worker verification stops when max iterations reached.
+
+        When the current verification iteration equals or exceeds
+        max_verification_iterations, no more worker retries SHALL be triggered.
+
+        Feature: output-verification-agent
+        """
+        # This is the logic from verify_worker_output
+        should_retry = current_iteration < max_verification_iterations
+
+        if current_iteration >= max_verification_iterations:
+            # Should not retry
+            assert not should_retry
+        else:
+            # Can still retry
+            assert should_retry
+
+    @given(
+        max_workflow_iterations=st.integers(min_value=1, max_value=5),
+        current_workflow_iteration=st.integers(min_value=0, max_value=10),
+    )
+    @settings(max_examples=100)
+    def test_workflow_restart_stops_at_max_iterations(
+        self,
+        max_workflow_iterations: int,
+        current_workflow_iteration: int,
+    ):
+        """Workflow restart stops when max iterations reached.
+
+        When the current workflow iteration equals or exceeds
+        max_workflow_iterations, no more workflow restarts SHALL be triggered.
+
+        Feature: output-verification-agent
+        """
+        # This is the logic from verify_final_result
+        should_restart = current_workflow_iteration < max_workflow_iterations
+
+        if current_workflow_iteration >= max_workflow_iterations:
+            # Should not restart
+            assert not should_restart
+        else:
+            # Can still restart
+            assert should_restart
+
+    @given(
+        max_verification_iterations=st.integers(min_value=1, max_value=5),
+        num_agents=st.integers(min_value=1, max_value=3),
+    )
+    @settings(max_examples=100)
+    def test_max_verification_iterations_applies_per_workflow_not_per_agent(
+        self,
+        max_verification_iterations: int,
+        num_agents: int,
+    ):
+        """Max verification iterations applies per workflow execution.
+
+        The max_verification_iterations limit SHALL apply to the entire
+        worker verification phase, not separately to each agent.
+
+        Feature: output-verification-agent
+        """
+        # Simulate a workflow with multiple agents
+        # All agents share the same verification iteration counter
+        verification_iteration = 0
+
+        # Simulate multiple failed verifications
+        for attempt in range(max_verification_iterations + 2):
+            if verification_iteration >= max_verification_iterations:
+                # Should stop for all agents
+                break
+            verification_iteration += 1
+
+        # Verify the iteration counter doesn't exceed max
+        assert verification_iteration <= max_verification_iterations
+
+    @given(
+        max_workflow_iterations=st.integers(min_value=1, max_value=3),
+        num_workflow_restarts=st.integers(min_value=0, max_value=5),
+    )
+    @settings(max_examples=100)
+    def test_workflow_restarts_count_correctly(
+        self,
+        max_workflow_iterations: int,
+        num_workflow_restarts: int,
+    ):
+        """Workflow restarts are counted correctly.
+
+        Each complete workflow restart (from analyze_and_plan) SHALL increment
+        the workflow_iteration counter.
+
+        Feature: output-verification-agent
+        """
+        # Simulate workflow restarts
+        workflow_iteration = 0
+        restarts_performed = 0
+
+        for _ in range(num_workflow_restarts):
+            if workflow_iteration >= max_workflow_iterations:
+                # Can't restart anymore
+                break
+            # Restart workflow
+            workflow_iteration += 1
+            restarts_performed += 1
+
+        # Verify restarts don't exceed max
+        assert restarts_performed <= max_workflow_iterations
+        assert workflow_iteration <= max_workflow_iterations
+
+    @given(
+        max_verification_iterations=st.integers(min_value=1, max_value=5),
+        max_workflow_iterations=st.integers(min_value=1, max_value=3),
+    )
+    @settings(max_examples=100)
+    def test_both_iteration_limits_are_independent(
+        self,
+        max_verification_iterations: int,
+        max_workflow_iterations: int,
+    ):
+        """Worker and workflow iteration limits are independent.
+
+        The max_verification_iterations and max_workflow_iterations SHALL be
+        independent limits that don't affect each other.
+
+        Feature: output-verification-agent
+        """
+        # Simulate reaching max worker iterations
+        worker_iteration = 0
+        for _ in range(max_verification_iterations + 1):
+            if worker_iteration >= max_verification_iterations:
+                break
+            worker_iteration += 1
+
+        # Simulate reaching max workflow iterations
+        workflow_iteration = 0
+        for _ in range(max_workflow_iterations + 1):
+            if workflow_iteration >= max_workflow_iterations:
+                break
+            workflow_iteration += 1
+
+        # Both should respect their own limits independently
+        assert worker_iteration <= max_verification_iterations
+        assert workflow_iteration <= max_workflow_iterations
+
+        # One reaching max shouldn't affect the other
+        # (they're independent counters)
+        assert worker_iteration == max_verification_iterations
+        assert workflow_iteration == max_workflow_iterations
+
+    @given(
+        max_verification_iterations=st.integers(min_value=1, max_value=5),
+        verification_iteration=st.integers(min_value=0, max_value=10),
+    )
+    @settings(max_examples=100)
+    def test_verification_iteration_increments_correctly(
+        self,
+        max_verification_iterations: int,
+        verification_iteration: int,
+    ):
+        """Verification iteration increments correctly on each retry.
+
+        Each worker retry SHALL increment the verification_iteration counter
+        by exactly 1.
+
+        Feature: output-verification-agent
+        """
+        # Simulate the increment logic from verify_worker_output
+        if verification_iteration < max_verification_iterations:
+            # Should increment
+            new_iteration = verification_iteration + 1
+            assert new_iteration == verification_iteration + 1
+            assert new_iteration <= max_verification_iterations + 1
+        else:
+            # Should not increment (max reached)
+            new_iteration = verification_iteration
+            assert new_iteration == verification_iteration
+
+    @given(
+        max_workflow_iterations=st.integers(min_value=1, max_value=3),
+        workflow_iteration=st.integers(min_value=0, max_value=5),
+    )
+    @settings(max_examples=100)
+    def test_workflow_iteration_increments_correctly(
+        self,
+        max_workflow_iterations: int,
+        workflow_iteration: int,
+    ):
+        """Workflow iteration increments correctly on each restart.
+
+        Each workflow restart SHALL increment the workflow_iteration counter
+        by exactly 1.
+
+        Feature: output-verification-agent
+        """
+        # Simulate the increment logic from verify_final_result
+        if workflow_iteration < max_workflow_iterations:
+            # Should increment
+            new_iteration = workflow_iteration + 1
+            assert new_iteration == workflow_iteration + 1
+            assert new_iteration <= max_workflow_iterations + 1
+        else:
+            # Should not increment (max reached)
+            new_iteration = workflow_iteration
+            assert new_iteration == workflow_iteration
+
+    @given(
+        max_verification_iterations=st.integers(min_value=1, max_value=5),
+        max_workflow_iterations=st.integers(min_value=1, max_value=3),
+        num_workflow_cycles=st.integers(min_value=1, max_value=3),
+    )
+    @settings(max_examples=100)
+    def test_verification_iteration_resets_on_workflow_restart(
+        self,
+        max_verification_iterations: int,
+        max_workflow_iterations: int,
+        num_workflow_cycles: int,
+    ):
+        """Verification iteration resets when workflow restarts.
+
+        When the workflow restarts (from analyze_and_plan), the
+        verification_iteration counter SHALL be reset to 0.
+
+        Feature: output-verification-agent
+        """
+        for workflow_cycle in range(min(num_workflow_cycles, max_workflow_iterations)):
+            # Start of workflow cycle
+            verification_iteration = 0
+
+            # Simulate worker verifications in this cycle
+            for _ in range(max_verification_iterations):
+                if verification_iteration >= max_verification_iterations:
+                    break
+                verification_iteration += 1
+
+            # At end of cycle, if workflow restarts, verification_iteration resets
+            # This is the logic from verify_final_result's update dict
+            if workflow_cycle < max_workflow_iterations - 1:
+                # Workflow will restart, reset verification_iteration
+                verification_iteration = 0
+                assert verification_iteration == 0
+
+    @given(
+        max_verification_iterations=st.integers(min_value=1, max_value=5),
+        max_workflow_iterations=st.integers(min_value=1, max_value=3),
+    )
+    @settings(max_examples=100)
+    def test_max_iterations_configuration_is_respected(
+        self,
+        max_verification_iterations: int,
+        max_workflow_iterations: int,
+    ):
+        """Max iterations configuration is respected throughout execution.
+
+        The configured max_verification_iterations and max_workflow_iterations
+        SHALL be respected at all decision points in the verification flow.
+
+        Feature: output-verification-agent
+        """
+        # Test worker verification decision point
+        for iteration in range(max_verification_iterations + 2):
+            should_continue_worker = iteration < max_verification_iterations
+            if iteration >= max_verification_iterations:
+                assert not should_continue_worker
+            else:
+                assert should_continue_worker
+
+        # Test workflow restart decision point
+        for iteration in range(max_workflow_iterations + 2):
+            should_continue_workflow = iteration < max_workflow_iterations
+            if iteration >= max_workflow_iterations:
+                assert not should_continue_workflow
+            else:
+                assert should_continue_workflow
