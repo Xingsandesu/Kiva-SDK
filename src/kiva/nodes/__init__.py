@@ -8,6 +8,7 @@ Nodes:
     synthesize_results: Combines agent outputs into a final response.
     verify_worker_output: Verifies Worker Agent outputs against assigned tasks.
     verify_final_result: Verifies final results against user's original prompt.
+    worker_retry: Handles retry logic for failed Worker verifications.
 
 Functions:
     extract_citations: Extracts source citations from result text.
@@ -21,6 +22,7 @@ from kiva.nodes.verify import (
     build_retry_prompt,
     verify_final_result,
     verify_worker_output,
+    worker_retry,
 )
 
 __all__ = [
@@ -31,4 +33,5 @@ __all__ = [
     "verify_worker_output",
     "verify_final_result",
     "build_retry_prompt",
+    "worker_retry",
 ]

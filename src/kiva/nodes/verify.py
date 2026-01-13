@@ -23,7 +23,11 @@ from kiva.verification import (
     VerificationStatus,
     WorkerOutputVerifier,
 )
-from kiva.workflows.utils import emit_event
+from kiva.workflows.utils import (
+    emit_event,
+    execute_single_agent,
+    get_agent_by_id,
+)
 
 # Sentinel for END state in LangGraph
 END = "__end__"
@@ -509,3 +513,94 @@ def _build_workflow_retry_instruction(
     ])
 
     return "\n".join(instruction_parts)
+
+
+async def worker_retry(
+    state: OrchestratorState,
+) -> dict[str, Any]:
+    """Worker retry node.
+
+    Handles retry logic for failed Worker verifications. This node is
+    responsible for:
+    1. Building a retry prompt with the assigned task and rejection context
+    2. Re-executing the failed Worker Agent(s) with the retry prompt
+
+    The retry prompt includes:
+    - The original assigned task (NOT the user's original prompt)
+    - Previous rejection reasons
+    - Improvement suggestions
+    - Instructions to try a different approach
+
+    Args:
+        state: The current orchestrator state containing retry_context,
+            agents, and task_assignments.
+
+    Returns:
+        Dictionary with updated agent_results from the retry execution.
+
+    Emits events:
+        - retry_triggered: When retry execution begins
+        - retry_completed: When retry execution completes
+
+    """
+    retry_context_dict = state.get("retry_context")
+    if not retry_context_dict:
+        emit_event({
+            "type": "retry_skipped",
+            "reason": "No retry context available",
+            "timestamp": time.time(),
+        })
+        return {"agent_results": []}
+
+    # Convert dict back to RetryContext if needed
+    if isinstance(retry_context_dict, dict):
+        retry_context = RetryContext(**retry_context_dict)
+    else:
+        retry_context = retry_context_dict
+
+    # Build retry prompt with assigned task and rejection context
+    retry_prompt = build_retry_prompt(retry_context)
+
+    emit_event({
+        "type": "retry_triggered",
+        "iteration": retry_context.iteration,
+        "retry_prompt": retry_prompt[:200],  # Truncate to avoid overly long events
+        "timestamp": time.time(),
+    })
+
+    # Get agents and task assignments from state
+    agents = state.get("agents", [])
+    task_assignments = state.get("task_assignments", [])
+    execution_id = state.get("execution_id", "")
+
+    results: list[dict[str, Any]] = []
+
+    # Re-execute agents with the retry prompt
+    for assignment in task_assignments:
+        agent_id = assignment.get("agent_id", "")
+        agent = get_agent_by_id(agents, agent_id)
+
+        if agent:
+            result = await execute_single_agent(
+                agent=agent,
+                agent_id=agent_id,
+                task=retry_prompt,
+                execution_id=execution_id,
+            )
+            results.append(result)
+        else:
+            # Agent not found, add error result
+            results.append({
+                "agent_id": agent_id,
+                "result": None,
+                "error": f"Agent '{agent_id}' not found for retry",
+            })
+
+    emit_event({
+        "type": "retry_completed",
+        "iteration": retry_context.iteration,
+        "results_count": len(results),
+        "timestamp": time.time(),
+    })
+
+    return {"agent_results": results}

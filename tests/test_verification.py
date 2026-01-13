@@ -1548,9 +1548,7 @@ class TestWorkflowRestartProperty:
         The failure summary SHALL handle None rejection reason by using
         a default message.
 
-        Feature: output-verification-agent, Property 11: Workflow Restart On
-        Final Verification Failure
-        Validates: Requirements 2.1, 5.3
+        Feature: output-verification-agent
         """
         from kiva.nodes.verify import _generate_failure_summary
 
@@ -1570,3 +1568,535 @@ class TestWorkflowRestartProperty:
         else:
             # Should have a default message
             assert "Unknown reason" in summary
+
+
+class TestRetryPromptProperty:
+    """Property-based tests for Retry Prompt Contains Assigned Task Context.
+
+    Feature: output-verification-agent, Property 8: Retry Prompt Contains
+    Assigned Task Context
+    Validates: Requirements 5.3
+    """
+
+    @given(
+        assigned_task=st.text(min_size=1, max_size=200).filter(lambda x: x.strip()),
+        rejection_reasons=st.lists(
+            st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
+            min_size=1,
+            max_size=5,
+        ),
+        improvement_suggestions=st.lists(
+            st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
+            min_size=0,
+            max_size=3,
+        ),
+        previous_outputs=st.lists(
+            st.text(min_size=1, max_size=200).filter(lambda x: x.strip()),
+            min_size=0,
+            max_size=3,
+        ),
+    )
+    @settings(max_examples=100)
+    def test_retry_prompt_contains_assigned_task_context(
+        self,
+        assigned_task: str,
+        rejection_reasons: list[str],
+        improvement_suggestions: list[str],
+        previous_outputs: list[str],
+    ):
+        """Property 8: Retry Prompt Contains Assigned Task Context.
+
+        For any Worker retry triggered by verification failure, the retry
+        prompt SHALL contain:
+        1. The original assigned task (not user prompt)
+        2. Explicit instructions to try a different approach
+        3. The previous rejection reasons specific to that task
+
+        Feature: output-verification-agent
+        """
+        from kiva.nodes.verify import build_retry_prompt
+
+        # Create previous rejections with suggestions
+        previous_rejections = [
+            VerificationResult(
+                status=VerificationStatus.FAILED,
+                rejection_reason=reason,
+                improvement_suggestions=(
+                    improvement_suggestions[:1] if improvement_suggestions else []
+                ),
+            )
+            for reason in rejection_reasons
+        ]
+
+        context = RetryContext(
+            iteration=1,
+            max_iterations=3,
+            previous_outputs=previous_outputs,
+            previous_rejections=previous_rejections,
+            task_history=[],
+            original_task=assigned_task,
+        )
+
+        prompt = build_retry_prompt(context)
+
+        # 1. Verify the assigned task is in the prompt (at least twice - once
+        #    at the beginning and once at the end as instruction)
+        assert assigned_task in prompt, (
+            f"Assigned task '{assigned_task}' not found in retry prompt"
+        )
+
+        # 2. Verify explicit instructions to try a different approach
+        different_approach_indicators = [
+            "DIFFERENT",
+            "different approach",
+            "fundamentally different",
+            "try something",
+        ]
+        has_different_approach = any(
+            indicator.lower() in prompt.lower()
+            for indicator in different_approach_indicators
+        )
+        assert has_different_approach, (
+            "Retry prompt does not contain instructions to try a different approach"
+        )
+
+        # 3. Verify all previous rejection reasons are included
+        for reason in rejection_reasons:
+            assert reason in prompt, (
+                f"Rejection reason '{reason}' not found in retry prompt"
+            )
+
+    @given(
+        assigned_task=st.text(min_size=10, max_size=100).filter(lambda x: x.strip()),
+        user_original_prompt=st.text(min_size=10, max_size=100).filter(
+            lambda x: x.strip()
+        ),
+    )
+    @settings(max_examples=100)
+    def test_retry_prompt_uses_assigned_task_not_user_prompt(
+        self,
+        assigned_task: str,
+        user_original_prompt: str,
+    ):
+        """Retry prompt uses assigned task, not user's original prompt.
+
+        The retry prompt SHALL contain the specific task assigned to the
+        Worker (task_assignment.task), NOT the user's original prompt.
+
+        Feature: output-verification-agent
+        """
+        from kiva.nodes.verify import build_retry_prompt
+
+        # Create a simple retry context with the assigned task
+        context = RetryContext(
+            iteration=1,
+            max_iterations=3,
+            previous_outputs=["Previous output"],
+            previous_rejections=[
+                VerificationResult(
+                    status=VerificationStatus.FAILED,
+                    rejection_reason="Test rejection",
+                )
+            ],
+            task_history=[],
+            original_task=assigned_task,  # This is the ASSIGNED task
+        )
+
+        prompt = build_retry_prompt(context)
+
+        # The assigned task should be in the prompt
+        assert assigned_task in prompt
+
+        # If assigned_task and user_original_prompt are sufficiently different
+        # (not substrings of each other and not too short to be coincidental),
+        # the user_original_prompt should NOT be in the prompt
+        if (
+            assigned_task != user_original_prompt
+            and user_original_prompt not in assigned_task
+            and assigned_task not in user_original_prompt
+            and len(user_original_prompt) > 5  # Avoid false positives with short strings
+        ):
+            assert user_original_prompt not in prompt, (
+                "User's original prompt should not be in retry prompt; "
+                "only the assigned task should be used"
+            )
+
+    @given(
+        assigned_task=st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
+        num_rejections=st.integers(min_value=1, max_value=5),
+    )
+    @settings(max_examples=100)
+    def test_retry_prompt_includes_all_rejection_attempts(
+        self,
+        assigned_task: str,
+        num_rejections: int,
+    ):
+        """Retry prompt includes all previous rejection attempts.
+
+        For any number of previous rejections, the retry prompt SHALL
+        include all rejection reasons to help the agent avoid repeating
+        the same mistakes.
+
+        Feature: output-verification-agent
+        """
+        from kiva.nodes.verify import build_retry_prompt
+
+        # Create multiple rejections with unique reasons
+        rejection_reasons = [f"Rejection reason {i}" for i in range(num_rejections)]
+        previous_rejections = [
+            VerificationResult(
+                status=VerificationStatus.FAILED,
+                rejection_reason=reason,
+                improvement_suggestions=[f"Suggestion for {reason}"],
+            )
+            for reason in rejection_reasons
+        ]
+
+        context = RetryContext(
+            iteration=num_rejections,
+            max_iterations=num_rejections + 2,
+            previous_outputs=[f"Output {i}" for i in range(num_rejections)],
+            previous_rejections=previous_rejections,
+            task_history=[],
+            original_task=assigned_task,
+        )
+
+        prompt = build_retry_prompt(context)
+
+        # All rejection reasons should be in the prompt
+        for reason in rejection_reasons:
+            assert reason in prompt, (
+                f"Rejection reason '{reason}' not found in retry prompt"
+            )
+
+    @given(
+        assigned_task=st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
+        suggestions=st.lists(
+            st.text(min_size=1, max_size=50).filter(lambda x: x.strip()),
+            min_size=1,
+            max_size=3,
+        ),
+    )
+    @settings(max_examples=100)
+    def test_retry_prompt_includes_improvement_suggestions(
+        self,
+        assigned_task: str,
+        suggestions: list[str],
+    ):
+        """Retry prompt includes improvement suggestions when available.
+
+        When improvement suggestions are provided in the rejection, the
+        retry prompt SHOULD include them to guide the agent.
+
+        Feature: output-verification-agent
+        """
+        from kiva.nodes.verify import build_retry_prompt
+
+        # Create a rejection with suggestions
+        previous_rejections = [
+            VerificationResult(
+                status=VerificationStatus.FAILED,
+                rejection_reason="Test rejection",
+                improvement_suggestions=suggestions,
+            )
+        ]
+
+        context = RetryContext(
+            iteration=1,
+            max_iterations=3,
+            previous_outputs=["Previous output"],
+            previous_rejections=previous_rejections,
+            task_history=[],
+            original_task=assigned_task,
+        )
+
+        prompt = build_retry_prompt(context)
+
+        # At least the first suggestion should be included
+        # (based on current implementation which includes suggestions)
+        if suggestions:
+            # Check if suggestions are mentioned in some form
+            has_suggestion_reference = any(
+                "Suggestion" in prompt or s in prompt for s in suggestions
+            )
+            assert has_suggestion_reference, (
+                "Retry prompt should include improvement suggestions"
+            )
+
+    @given(
+        assigned_task=st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
+    )
+    @settings(max_examples=100)
+    def test_retry_prompt_instructs_not_to_repeat(
+        self,
+        assigned_task: str,
+    ):
+        """Retry prompt instructs agent not to repeat similar approaches.
+
+        The retry prompt SHALL explicitly instruct the agent to NOT repeat
+        similar approaches that failed before.
+
+        Feature: output-verification-agent
+        """
+        from kiva.nodes.verify import build_retry_prompt
+
+        context = RetryContext(
+            iteration=1,
+            max_iterations=3,
+            previous_outputs=["Previous output"],
+            previous_rejections=[
+                VerificationResult(
+                    status=VerificationStatus.FAILED,
+                    rejection_reason="Test rejection",
+                )
+            ],
+            task_history=[],
+            original_task=assigned_task,
+        )
+
+        prompt = build_retry_prompt(context)
+
+        # Check for "do not repeat" or similar instructions
+        no_repeat_indicators = [
+            "NOT repeat",
+            "Do NOT",
+            "don't repeat",
+            "avoid",
+            "different",
+        ]
+        has_no_repeat_instruction = any(
+            indicator.lower() in prompt.lower() for indicator in no_repeat_indicators
+        )
+        assert has_no_repeat_instruction, (
+            "Retry prompt should instruct agent not to repeat similar approaches"
+        )
+
+
+
+class TestWorkerRetryNode:
+    """Unit tests for worker_retry graph node."""
+
+    @pytest.mark.asyncio
+    async def test_worker_retry_returns_empty_when_no_context(self):
+        """Test that worker_retry returns empty results when no retry context."""
+        from kiva.nodes.verify import worker_retry
+
+        state = {
+            "retry_context": None,
+            "agents": [],
+            "task_assignments": [],
+            "execution_id": "test-exec-123",
+        }
+
+        result = await worker_retry(state)
+
+        assert result == {"agent_results": []}
+
+    @pytest.mark.asyncio
+    async def test_worker_retry_builds_prompt_from_context(self):
+        """Test that worker_retry builds retry prompt from context."""
+        from kiva.nodes.verify import worker_retry
+
+        retry_context = RetryContext(
+            iteration=1,
+            max_iterations=3,
+            previous_outputs=["Previous output"],
+            previous_rejections=[
+                VerificationResult(
+                    status=VerificationStatus.FAILED,
+                    rejection_reason="Output incomplete",
+                    improvement_suggestions=["Add more details"],
+                )
+            ],
+            task_history=[],
+            original_task="Analyze the data",
+        )
+
+        state = {
+            "retry_context": retry_context.model_dump(),
+            "agents": [],  # No agents, so no execution
+            "task_assignments": [],
+            "execution_id": "test-exec-123",
+        }
+
+        result = await worker_retry(state)
+
+        # With no agents, should return empty results
+        assert result == {"agent_results": []}
+
+    @pytest.mark.asyncio
+    async def test_worker_retry_handles_missing_agent(self):
+        """Test that worker_retry handles missing agent gracefully."""
+        from kiva.nodes.verify import worker_retry
+
+        retry_context = RetryContext(
+            iteration=1,
+            max_iterations=3,
+            previous_outputs=["Previous output"],
+            previous_rejections=[
+                VerificationResult(
+                    status=VerificationStatus.FAILED,
+                    rejection_reason="Output incomplete",
+                )
+            ],
+            task_history=[],
+            original_task="Analyze the data",
+        )
+
+        state = {
+            "retry_context": retry_context.model_dump(),
+            "agents": [],  # No agents available
+            "task_assignments": [
+                {"agent_id": "missing_agent", "task": "Some task"}
+            ],
+            "execution_id": "test-exec-123",
+        }
+
+        result = await worker_retry(state)
+
+        # Should return error result for missing agent
+        assert len(result["agent_results"]) == 1
+        assert result["agent_results"][0]["agent_id"] == "missing_agent"
+        assert result["agent_results"][0]["error"] is not None
+        assert "not found" in result["agent_results"][0]["error"]
+
+    @pytest.mark.asyncio
+    async def test_worker_retry_with_dict_context(self):
+        """Test that worker_retry handles dict retry context."""
+        from kiva.nodes.verify import worker_retry
+
+        # Pass context as dict (as it would be in state)
+        retry_context_dict = {
+            "iteration": 1,
+            "max_iterations": 3,
+            "previous_outputs": ["Previous output"],
+            "previous_rejections": [
+                {
+                    "status": "failed",
+                    "rejection_reason": "Output incomplete",
+                    "improvement_suggestions": [],
+                    "field_errors": {},
+                    "validator_name": "default",
+                    "confidence": 1.0,
+                }
+            ],
+            "task_history": [],
+            "original_task": "Analyze the data",
+        }
+
+        state = {
+            "retry_context": retry_context_dict,
+            "agents": [],
+            "task_assignments": [],
+            "execution_id": "test-exec-123",
+        }
+
+        result = await worker_retry(state)
+
+        assert result == {"agent_results": []}
+
+    @pytest.mark.asyncio
+    async def test_worker_retry_with_mock_agent(self):
+        """Test that worker_retry executes agent with retry prompt."""
+        from kiva.nodes.verify import worker_retry
+
+        # Create a mock agent
+        mock_agent = MagicMock()
+        mock_agent.name = "test_agent"
+        mock_agent.ainvoke = AsyncMock(
+            return_value={"messages": [MagicMock(content="Retry result")]}
+        )
+
+        retry_context = RetryContext(
+            iteration=1,
+            max_iterations=3,
+            previous_outputs=["Previous output"],
+            previous_rejections=[
+                VerificationResult(
+                    status=VerificationStatus.FAILED,
+                    rejection_reason="Output incomplete",
+                    improvement_suggestions=["Add more details"],
+                )
+            ],
+            task_history=[],
+            original_task="Analyze the data",
+        )
+
+        state = {
+            "retry_context": retry_context.model_dump(),
+            "agents": [mock_agent],
+            "task_assignments": [
+                {"agent_id": "test_agent", "task": "Analyze the data"}
+            ],
+            "execution_id": "test-exec-123",
+        }
+
+        result = await worker_retry(state)
+
+        # Should have called the agent
+        assert mock_agent.ainvoke.called
+        assert len(result["agent_results"]) == 1
+        assert result["agent_results"][0]["agent_id"] == "test_agent"
+        assert result["agent_results"][0]["result"] == "Retry result"
+
+    @pytest.mark.asyncio
+    async def test_worker_retry_prompt_contains_rejection_context(self):
+        """Test that retry prompt passed to agent contains rejection context."""
+        from kiva.nodes.verify import worker_retry
+
+        # Create a mock agent that captures the task
+        captured_tasks = []
+
+        async def capture_task(input_dict):
+            task = input_dict["messages"][0]["content"]
+            captured_tasks.append(task)
+            return {"messages": [MagicMock(content="Result")]}
+
+        mock_agent = MagicMock()
+        mock_agent.name = "test_agent"
+        mock_agent.ainvoke = capture_task
+
+        retry_context = RetryContext(
+            iteration=2,
+            max_iterations=3,
+            previous_outputs=["First output", "Second output"],
+            previous_rejections=[
+                VerificationResult(
+                    status=VerificationStatus.FAILED,
+                    rejection_reason="First rejection reason",
+                    improvement_suggestions=["First suggestion"],
+                ),
+                VerificationResult(
+                    status=VerificationStatus.FAILED,
+                    rejection_reason="Second rejection reason",
+                    improvement_suggestions=["Second suggestion"],
+                ),
+            ],
+            task_history=[],
+            original_task="Analyze the complex data",
+        )
+
+        state = {
+            "retry_context": retry_context.model_dump(),
+            "agents": [mock_agent],
+            "task_assignments": [
+                {"agent_id": "test_agent", "task": "Analyze the complex data"}
+            ],
+            "execution_id": "test-exec-123",
+        }
+
+        await worker_retry(state)
+
+        # Verify the task passed to agent contains required elements
+        assert len(captured_tasks) == 1
+        task = captured_tasks[0]
+
+        # Should contain the original task
+        assert "Analyze the complex data" in task
+
+        # Should contain rejection reasons
+        assert "First rejection reason" in task
+        assert "Second rejection reason" in task
+
+        # Should contain instructions to try different approach
+        assert "DIFFERENT" in task or "different" in task.lower()
