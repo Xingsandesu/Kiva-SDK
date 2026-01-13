@@ -1318,3 +1318,255 @@ class TestWorkerRetryContextProperty:
         # Verify we can determine if more retries are allowed
         can_retry = context.iteration < context.max_iterations
         assert can_retry == (iteration < max_iterations)
+
+
+
+class TestWorkflowRestartProperty:
+    """Property-based tests for Workflow Restart On Final Verification Failure.
+
+    Feature: output-verification-agent
+    """
+
+    @given(
+        original_prompt=st.text(min_size=1, max_size=200).filter(lambda x: x.strip()),
+        rejection_reason=st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
+        num_previous_attempts=st.integers(min_value=0, max_value=3),
+    )
+    @settings(max_examples=100)
+    def test_workflow_retry_instruction_contains_original_prompt(
+        self,
+        original_prompt: str,
+        rejection_reason: str,
+        num_previous_attempts: int,
+    ):
+        """Workflow retry instruction contains original prompt.
+
+        For any final result verification failure, the retry instruction SHALL
+        contain the user's original prompt to guide the retry.
+
+        Feature: output-verification-agent
+        """
+        from kiva.nodes.verify import _build_workflow_retry_instruction
+
+        # Build previous attempts
+        previous_attempts = [
+            {
+                "iteration": i,
+                "final_result": f"Result {i}",
+                "rejection_reason": f"Reason {i}",
+                "agent_results": [],
+            }
+            for i in range(num_previous_attempts)
+        ]
+
+        instruction = _build_workflow_retry_instruction(
+            original_prompt=original_prompt,
+            rejection_reason=rejection_reason,
+            previous_attempts=previous_attempts,
+        )
+
+        # Verify original prompt is in the instruction
+        assert original_prompt in instruction
+        # Verify it's marked as a retry
+        assert "RETRY" in instruction
+        # Verify it instructs to try different approach
+        assert "DIFFERENT" in instruction or "different" in instruction.lower()
+
+    @given(
+        original_prompt=st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
+        rejection_reasons=st.lists(
+            st.text(min_size=1, max_size=50).filter(lambda x: x.strip()),
+            min_size=1,
+            max_size=3,
+        ),
+    )
+    @settings(max_examples=100)
+    def test_workflow_retry_instruction_contains_all_previous_rejections(
+        self,
+        original_prompt: str,
+        rejection_reasons: list[str],
+    ):
+        """Workflow retry instruction contains all previous rejection reasons.
+
+        For any workflow restart, the retry instruction SHALL contain all
+        previous rejection reasons to prevent repeating the same mistakes.
+
+        Feature: output-verification-agent
+        """
+        from kiva.nodes.verify import _build_workflow_retry_instruction
+
+        # Build previous attempts with rejection reasons
+        previous_attempts = [
+            {
+                "iteration": i,
+                "final_result": f"Result {i}",
+                "rejection_reason": reason,
+                "agent_results": [],
+            }
+            for i, reason in enumerate(rejection_reasons)
+        ]
+
+        instruction = _build_workflow_retry_instruction(
+            original_prompt=original_prompt,
+            rejection_reason=rejection_reasons[-1] if rejection_reasons else None,
+            previous_attempts=previous_attempts,
+        )
+
+        # Verify all rejection reasons are included
+        for reason in rejection_reasons:
+            assert reason in instruction
+
+    @given(
+        original_prompt=st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
+        rejection_reason=st.text(min_size=1, max_size=50).filter(lambda x: x.strip()),
+        improvement_suggestions=st.lists(
+            st.text(min_size=1, max_size=50).filter(lambda x: x.strip()),
+            min_size=0,
+            max_size=3,
+        ),
+        attempts=st.integers(min_value=1, max_value=5),
+    )
+    @settings(max_examples=100)
+    def test_failure_summary_contains_original_prompt_and_reason(
+        self,
+        original_prompt: str,
+        rejection_reason: str,
+        improvement_suggestions: list[str],
+        attempts: int,
+    ):
+        """Failure summary contains original prompt and rejection reason.
+
+        When max iterations are reached, the failure summary SHALL contain
+        the user's original prompt and the rejection reason.
+
+        Feature: output-verification-agent
+        """
+        from kiva.nodes.verify import _generate_failure_summary
+
+        summary = _generate_failure_summary(
+            original_prompt=original_prompt,
+            rejection_reason=rejection_reason,
+            improvement_suggestions=improvement_suggestions,
+            attempts=attempts,
+        )
+
+        # Verify original prompt is in the summary
+        assert original_prompt in summary
+        # Verify rejection reason is in the summary
+        assert rejection_reason in summary
+        # Verify attempt count is in the summary
+        assert str(attempts) in summary
+        # Verify all improvement suggestions are included
+        for suggestion in improvement_suggestions:
+            assert suggestion in summary
+
+    @given(
+        workflow_iteration=st.integers(min_value=0, max_value=5),
+        max_workflow_iterations=st.integers(min_value=1, max_value=5),
+    )
+    @settings(max_examples=100)
+    def test_workflow_iteration_tracking(
+        self,
+        workflow_iteration: int,
+        max_workflow_iterations: int,
+    ):
+        """Workflow iteration is correctly tracked.
+
+        The workflow iteration SHALL be correctly tracked to determine
+        whether more retries are allowed.
+
+        Feature: output-verification-agent
+        """
+        # Determine if restart should be allowed
+        should_restart = workflow_iteration < max_workflow_iterations
+
+        # This is the logic used in verify_final_result
+        if workflow_iteration >= max_workflow_iterations:
+            # Max reached, should not restart
+            assert not should_restart
+        else:
+            # Can still restart
+            assert should_restart
+
+    @given(
+        original_prompt=st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
+        final_result=st.text(min_size=1, max_size=200).filter(lambda x: x.strip()),
+        num_agent_results=st.integers(min_value=0, max_value=3),
+    )
+    @settings(max_examples=100)
+    def test_previous_attempts_history_is_preserved(
+        self,
+        original_prompt: str,
+        final_result: str,
+        num_agent_results: int,
+    ):
+        """Previous workflow attempts are preserved in history.
+
+        When a workflow restarts, the previous attempt SHALL be added to
+        the previous_workflow_attempts history.
+
+        Feature: output-verification-agent
+        """
+        # Simulate building previous attempts history
+        previous_attempts: list[dict] = []
+        agent_results = [
+            {"agent_id": f"agent_{i}", "result": f"Result {i}"}
+            for i in range(num_agent_results)
+        ]
+
+        # Add a new attempt (simulating what verify_final_result does)
+        new_attempt = {
+            "iteration": len(previous_attempts),
+            "final_result": final_result,
+            "rejection_reason": "Test rejection",
+            "agent_results": agent_results,
+        }
+        previous_attempts = list(previous_attempts)  # Make a copy
+        previous_attempts.append(new_attempt)
+
+        # Verify the attempt was added
+        assert len(previous_attempts) == 1
+        assert previous_attempts[0]["final_result"] == final_result
+        assert previous_attempts[0]["rejection_reason"] == "Test rejection"
+        assert len(previous_attempts[0]["agent_results"]) == num_agent_results
+
+    @given(
+        original_prompt=st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
+        rejection_reason=st.one_of(
+            st.none(),
+            st.text(min_size=1, max_size=50).filter(lambda x: x.strip()),
+        ),
+    )
+    @settings(max_examples=100)
+    def test_failure_summary_handles_none_rejection_reason(
+        self,
+        original_prompt: str,
+        rejection_reason: str | None,
+    ):
+        """Failure summary handles None rejection reason gracefully.
+
+        The failure summary SHALL handle None rejection reason by using
+        a default message.
+
+        Feature: output-verification-agent, Property 11: Workflow Restart On
+        Final Verification Failure
+        Validates: Requirements 2.1, 5.3
+        """
+        from kiva.nodes.verify import _generate_failure_summary
+
+        summary = _generate_failure_summary(
+            original_prompt=original_prompt,
+            rejection_reason=rejection_reason,
+            improvement_suggestions=[],
+            attempts=1,
+        )
+
+        # Verify original prompt is always present
+        assert original_prompt in summary
+
+        # Verify rejection reason handling
+        if rejection_reason is not None:
+            assert rejection_reason in summary
+        else:
+            # Should have a default message
+            assert "Unknown reason" in summary

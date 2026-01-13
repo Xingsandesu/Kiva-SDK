@@ -7,6 +7,7 @@ Nodes:
     route_to_workflow: Routes to the appropriate workflow based on analysis.
     synthesize_results: Combines agent outputs into a final response.
     verify_worker_output: Verifies Worker Agent outputs against assigned tasks.
+    verify_final_result: Verifies final results against user's original prompt.
 
 Functions:
     extract_citations: Extracts source citations from result text.
@@ -16,7 +17,11 @@ Functions:
 from kiva.nodes.analyze import analyze_and_plan
 from kiva.nodes.router import route_to_workflow
 from kiva.nodes.synthesize import extract_citations, synthesize_results
-from kiva.nodes.verify import build_retry_prompt, verify_worker_output
+from kiva.nodes.verify import (
+    build_retry_prompt,
+    verify_final_result,
+    verify_worker_output,
+)
 
 __all__ = [
     "analyze_and_plan",
@@ -24,5 +29,6 @@ __all__ = [
     "synthesize_results",
     "extract_citations",
     "verify_worker_output",
+    "verify_final_result",
     "build_retry_prompt",
 ]
