@@ -500,7 +500,12 @@ class Kiva:
 
         if console:
             return asyncio.run(
-                self.run_async(prompt, console=console, max_iterations=max_iterations)
+                self.run_async(
+                    prompt,
+                    console=console,
+                    max_iterations=max_iterations,
+                    worker_recursion_limit=worker_recursion_limit,
+                )
             )
 
         agents = self._build_agents()
@@ -548,6 +553,7 @@ class _KivaRunStream:
         self._done = False
         self._final_result: str | None = None
         self._loop = None
+        self._previous_loop = None
         self._agen = None
 
     def __iter__(self) -> Iterator:
@@ -564,6 +570,10 @@ class _KivaRunStream:
                 return
 
             if self._loop is None:
+                try:
+                    self._previous_loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    self._previous_loop = None
                 self._loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(self._loop)
                 from kiva.run import run
@@ -598,6 +608,8 @@ class _KivaRunStream:
         return self._final_result
 
     def _shutdown(self) -> None:
+        import asyncio
+
         if self._agen is not None:
             try:
                 self._loop.run_until_complete(self._agen.aclose())
@@ -608,7 +620,12 @@ class _KivaRunStream:
                 self._loop.close()
             except Exception:
                 pass
+        if self._previous_loop is not None:
+            asyncio.set_event_loop(self._previous_loop)
+        else:
+            asyncio.set_event_loop(None)
         self._loop = None
+        self._previous_loop = None
         self._agen = None
 
     def __str__(self) -> str:
