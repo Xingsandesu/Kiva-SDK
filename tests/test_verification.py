@@ -24,6 +24,15 @@ from kiva.verification import (
 )
 
 
+def _can_convert_to_float(s: str) -> bool:
+    """Helper to check if a string can be converted to float by Pydantic."""
+    try:
+        float(s)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
 class TestVerificationStatus:
     """Tests for VerificationStatus enum."""
 
@@ -3444,12 +3453,19 @@ class TestInterAgentMessageValidationProperty:
         sender_id=st.text(min_size=1, max_size=50).filter(lambda x: x.strip()),
         receiver_id=st.text(min_size=1, max_size=50).filter(lambda x: x.strip()),
         message_type=st.text(min_size=1, max_size=30).filter(lambda x: x.strip()),
-        # Generate invalid timestamp values
+        # Generate invalid timestamp values that cannot be coerced to float
+        # Note: Pydantic coerces "Infinity", "inf", "nan" to floats, so we exclude those
         invalid_timestamp=st.one_of(
             st.text(min_size=1, max_size=20).filter(
-                lambda x: x.strip() and not x.strip().lstrip("-").replace(".", "", 1).isdigit()
+                lambda x: x.strip()
+                and not x.strip().lstrip("-").replace(".", "", 1).isdigit()
+                and x.strip().lower() not in ("inf", "-inf", "infinity", "-infinity", "nan")
+            ).filter(
+                # Double-check: try to convert and ensure it fails
+                lambda x: not _can_convert_to_float(x)
             ),
             st.lists(st.integers(), min_size=1, max_size=3),
+            st.dictionaries(st.text(min_size=1, max_size=5), st.integers(), min_size=1, max_size=3),
         ),
     )
     @settings(max_examples=100)
@@ -3868,10 +3884,9 @@ class TestMessageValidationResultModel:
 class TestGracefulDegradationProperty:
     """Property-based tests for Graceful Degradation On Failure.
 
-    Feature: output-verification-agent, Property 10: Graceful Degradation On Failure
-    Validates: Requirements 8.1, 8.2, 8.3
+    Feature: output-verification-agent
 
-    Property 10: Graceful Degradation On Failure
+    Graceful Degradation On Failure
     *For any* execution where all retry attempts fail (at either Worker or Workflow
     level) OR where the Verifier itself fails, the SDK SHALL:
     - For Worker level: proceed to synthesis with available results and a warning flag
@@ -3961,13 +3976,12 @@ class TestGracefulDegradationProperty:
         iteration: int,
         max_iterations: int,
     ):
-        """Property 10: Worker verification returns results at max iterations.
+        """Worker verification returns results at max iterations.
 
         For any worker verification that reaches max iterations, the SDK SHALL
         proceed to synthesis with available results and a warning flag.
 
-        Feature: output-verification-agent, Property 10: Graceful Degradation On Failure
-        Validates: Requirements 8.1
+        Feature: output-verification-agent
         """
         # When iteration >= max_iterations, we should get a warning and proceed
         # This tests the logic that max iterations triggers graceful degradation
@@ -3985,13 +3999,12 @@ class TestGracefulDegradationProperty:
         self,
         error_message: str,
     ):
-        """Property 10: Verifier failure produces SKIPPED status.
+        """Verifier failure produces SKIPPED status.
 
         For any verifier that fails with an exception, the SDK SHALL produce
         a SKIPPED verification result with the error details.
 
-        Feature: output-verification-agent, Property 10: Graceful Degradation On Failure
-        Validates: Requirements 8.2
+        Feature: output-verification-agent
         """
         # Create a verifier result that represents a skipped verification
         result = VerificationResult(
@@ -4034,14 +4047,13 @@ class TestGracefulDegradationProperty:
         passed_results: list[VerificationResult],
         skipped_results: list[VerificationResult],
     ):
-        """Property 10: SKIPPED results allow verification to pass.
+        """SKIPPED results allow verification to pass.
 
         For any combination of PASSED and SKIPPED results (no FAILED), the
         aggregate verification SHALL be PASSED, enabling graceful degradation
         when verifiers fail.
 
-        Feature: output-verification-agent, Property 10: Graceful Degradation On Failure
-        Validates: Requirements 8.2
+        Feature: output-verification-agent
         """
         verifier = WorkerOutputVerifier()
         all_results = passed_results + skipped_results
@@ -4067,13 +4079,12 @@ class TestGracefulDegradationProperty:
         task: str,
         output: str,
     ):
-        """Property 10: Custom verifier exception produces SKIPPED result.
+        """Custom verifier exception produces SKIPPED result.
 
         For any custom verifier that raises an exception, the SDK SHALL
         produce a SKIPPED result instead of propagating the exception.
 
-        Feature: output-verification-agent, Property 10: Graceful Degradation On Failure
-        Validates: Requirements 8.2, 8.3
+        Feature: output-verification-agent
         """
 
         class FailingVerifier:
@@ -4110,13 +4121,12 @@ class TestGracefulDegradationProperty:
         original_prompt: str,
         final_result: str,
     ):
-        """Property 10: Final verifier exception produces SKIPPED result.
+        """Final verifier exception produces SKIPPED result.
 
         For any final result verifier custom verifier that raises an exception,
         the SDK SHALL produce a SKIPPED result instead of propagating the exception.
 
-        Feature: output-verification-agent, Property 10: Graceful Degradation On Failure
-        Validates: Requirements 8.2, 8.3
+        Feature: output-verification-agent
         """
 
         class FailingVerifier:
@@ -4155,13 +4165,12 @@ class TestGracefulDegradationProperty:
         max_workflow_iterations: int,
         original_prompt: str,
     ):
-        """Property 10: Workflow max iterations returns failure summary.
+        """Workflow max iterations returns failure summary.
 
         For any workflow that reaches max iterations, the SDK SHALL return
         a failure summary containing the original user prompt.
 
-        Feature: output-verification-agent, Property 10: Graceful Degradation On Failure
-        Validates: Requirements 8.1
+        Feature: output-verification-agent
         """
         from kiva.nodes.verify import _generate_failure_summary
 
@@ -4203,13 +4212,12 @@ class TestGracefulDegradationProperty:
         self,
         failed_results: list[VerificationResult],
     ):
-        """Property 10: Aggregated failure preserves all rejection reasons.
+        """Aggregated failure preserves all rejection reasons.
 
         For any set of failed verification results, the aggregated result
         SHALL preserve all rejection reasons and improvement suggestions.
 
-        Feature: output-verification-agent, Property 10: Graceful Degradation On Failure
-        Validates: Requirements 8.1, 8.3
+        Feature: output-verification-agent
         """
         verifier = WorkerOutputVerifier()
         aggregated = verifier._aggregate_results(failed_results)

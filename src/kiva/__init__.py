@@ -49,6 +49,13 @@ from kiva.exceptions import (
 )
 from kiva.router import AgentRouter
 
+# Verification models (public)
+from kiva.verification import (
+    RetryContext,
+    VerificationResult,
+    VerificationStatus,
+)
+
 __all__ = [
     # High-level API
     "Kiva",
@@ -58,4 +65,8 @@ __all__ = [
     "ConfigurationError",
     "AgentError",
     "WorkflowError",
+    # Verification
+    "VerificationResult",
+    "VerificationStatus",
+    "RetryContext",
 ]

@@ -130,7 +130,11 @@ async def run(
     }
 
     # Pass agents via configurable for Send-based instance execution
-    config = {"configurable": {"agents": agents}}
+    # Increase recursion_limit to handle verification loops
+    config = {
+        "configurable": {"agents": agents},
+        "recursion_limit": 100,  # Increased from default 25 to handle verification loops
+    }
 
     async for chunk in graph.astream(
         initial_state, config=config, stream_mode=["messages", "updates", "custom"]

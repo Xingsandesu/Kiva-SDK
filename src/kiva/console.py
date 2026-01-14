@@ -20,6 +20,7 @@ from rich.table import Table
 from rich.text import Text
 
 from kiva.events import (
+    FINAL_VERIFICATION_ERROR,
     FINAL_VERIFICATION_FAILED,
     FINAL_VERIFICATION_MAX_REACHED,
     FINAL_VERIFICATION_PASSED,
@@ -27,6 +28,7 @@ from kiva.events import (
     RETRY_COMPLETED,
     RETRY_SKIPPED,
     RETRY_TRIGGERED,
+    WORKER_VERIFICATION_ERROR,
     WORKER_VERIFICATION_FAILED,
     WORKER_VERIFICATION_MAX_REACHED,
     WORKER_VERIFICATION_PASSED,
@@ -325,16 +327,16 @@ class KivaLiveRenderer:
         """Render the worker verification status panel."""
         state = self.worker_verification_state
         status = state.get("status", "pending")
-        
+
         if status == "pending":
             return None
-        
+
         table = Table(
             box=ROUNDED, show_header=False, border_style="cyan", padding=(0, 1)
         )
         table.add_column("", style="bold cyan")
         table.add_column("", style="white")
-        
+
         # Status row with icon
         status_icons = {
             "verifying": ("🔍", "yellow"),
@@ -353,7 +355,7 @@ class KivaLiveRenderer:
         max_iterations = state.get("max_iterations", 3)
         progress_text = f"{iteration}/{max_iterations}"
         table.add_row("Iteration", Text(progress_text, style="cyan"))
-        
+
         # Failed agents (if any)
         failed_agents = state.get("failed_agents", [])
         if failed_agents:
@@ -361,7 +363,7 @@ class KivaLiveRenderer:
             if len(failed_agents) > 3:
                 failed_text += f" (+{len(failed_agents) - 3} more)"
             table.add_row("Failed Agents", Text(failed_text, style="red"))
-        
+
         title = "[cyan]Worker Verification[/]"
         if status == "verifying":
             spinner = Spinner("dots", text="Verifying worker outputs...", style="cyan")
@@ -850,6 +852,18 @@ class KivaLiveRenderer:
             "failed_agents": failed_agents,
         })
 
+    def on_worker_verification_error(self, error: str, action: str):
+        """Handle worker verification error event (graceful degradation).
+
+        This is called when the verifier itself fails, triggering graceful
+        degradation where verification is bypassed.
+        """
+        self.worker_verification_state.update({
+            "status": "error",
+            "error": error,
+            "action": action,
+        })
+
     def on_final_verification_start(self, iteration: int, max_iterations: int):
         """Handle final verification start event."""
         self.phase = "final_verify"
@@ -885,6 +899,18 @@ class KivaLiveRenderer:
             "status": "max_reached",
             "iteration": iteration,
             "rejection_reason": rejection_reason,
+        })
+
+    def on_final_verification_error(self, error: str, action: str):
+        """Handle final verification error event (graceful degradation).
+
+        This is called when the verifier itself fails, triggering graceful
+        degradation where verification is bypassed.
+        """
+        self.final_verification_state.update({
+            "status": "error",
+            "error": error,
+            "action": action,
         })
 
     def on_retry_triggered(self, iteration: int, agents: list):
@@ -1097,6 +1123,11 @@ async def run_with_console(
                     event.data.get("iteration", 0),
                     event.data.get("failed_agents", []),
                 )
+            elif event.type == WORKER_VERIFICATION_ERROR:
+                renderer.on_worker_verification_error(
+                    event.data.get("error", "Unknown error"),
+                    event.data.get("action", "bypass_verification"),
+                )
             # Final verification events
             elif event.type == FINAL_VERIFICATION_START:
                 renderer.on_final_verification_start(
@@ -1116,6 +1147,11 @@ async def run_with_console(
                 renderer.on_final_verification_max_reached(
                     event.data.get("iteration", 0),
                     event.data.get("reason"),
+                )
+            elif event.type == FINAL_VERIFICATION_ERROR:
+                renderer.on_final_verification_error(
+                    event.data.get("error", "Unknown error"),
+                    event.data.get("action", "bypass_verification"),
                 )
             # Retry events
             elif event.type == RETRY_TRIGGERED:

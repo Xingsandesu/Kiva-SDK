@@ -9,6 +9,8 @@ A multi-agent orchestration SDK for building intelligent workflows
 - **Three Workflow Patterns**: Router (simple), Supervisor (parallel), and Parliament (deliberative)
 - **Automatic Complexity Analysis**: Intelligent workflow selection based on task complexity
 - **Parallel Agent Instances**: Spawn multiple instances of the same agent for parallel subtask execution
+- **Output Verification**: Dual-layer verification system with automatic retry and self-healing
+- **Custom Verifiers**: Extensible verification rules via `@kiva.verifier` decorator
 - **Modular Architecture**: AgentRouter for organizing agents across multiple files
 - **Rich Console Output**: Beautiful terminal visualization (optional)
 - **Error Recovery**: Built-in error handling with recovery suggestions
@@ -123,6 +125,43 @@ Coordinates multiple agents executing in parallel. Supports spawning multiple in
 ### Parliament Workflow
 Implements iterative deliberation with conflict resolution. Designed for complex reasoning tasks requiring consensus or validation.
 
+## Output Verification
+
+Kiva includes a dual-layer verification system that automatically validates agent outputs:
+
+```python
+from kiva import Kiva, VerificationResult, VerificationStatus
+
+kiva = Kiva(
+    base_url="...",
+    api_key="...",
+    model="gpt-4o",
+    max_iterations=3,  # Global retry limit
+)
+
+# Custom verifier for additional validation
+@kiva.verifier("length_check")
+def check_length(task: str, output: str, context: dict | None = None) -> VerificationResult:
+    """Ensure output meets minimum length."""
+    if len(output) < 50:
+        return VerificationResult(
+            status=VerificationStatus.FAILED,
+            rejection_reason="Output too short",
+            improvement_suggestions=["Provide more detailed response"],
+        )
+    return VerificationResult(status=VerificationStatus.PASSED)
+
+@kiva.agent("researcher", "Researches topics", max_iterations=5)  # Per-agent limit
+def research(topic: str) -> str:
+    """Research a topic."""
+    return f"Research results for {topic}..."
+
+# Run with per-execution limit
+result = kiva.run("Research AI trends", max_iterations=4)
+```
+
+See [Output Verification Documentation](docs/verification.md) for details.
+
 ## Parallel Agent Instances
 
 Kiva can spawn multiple instances of the same agent definition for parallel execution:
@@ -164,6 +203,7 @@ asyncio.run(main())
 ## Documentation
 
 - [AgentRouter - Modular Applications](docs/agent-router.md)
+- [Output Verification](docs/verification.md)
 - [Parallel Agent Instances](docs/parallel-instances.md)
 - [E2E Testing Guide](docs/e2e-testing-guide.md)
 
