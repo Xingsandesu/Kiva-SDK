@@ -3,9 +3,7 @@
 This module defines the Pydantic data models used for output verification,
 including verification results, retry context, and inter-agent messages.
 
-The verification system implements a dual-layer architecture:
-1. Worker Agent output verification - validates against assigned tasks
-2. Final result verification - validates against user's original prompt
+The verification system verifies Worker Agent outputs against assigned tasks.
 """
 
 from abc import abstractmethod
@@ -29,6 +27,20 @@ class VerificationStatus(str, Enum):
     PASSED = "passed"
     FAILED = "failed"
     SKIPPED = "skipped"
+
+
+class VerificationStateCode(str, Enum):
+    """Verification lifecycle state codes."""
+
+    INITIALIZING = "initializing"
+    PREPROCESSING = "preprocessing"
+    VERIFYING = "verifying"
+    RETRY_WAITING = "retry_waiting"
+    RETRY_RUNNING = "retry_running"
+    FAILURE_HANDLING = "failure_handling"
+    ROLLBACK = "rollback"
+    COMMITTING = "committing"
+    COMPLETED = "completed"
 
 
 class VerificationResult(BaseModel):
@@ -481,7 +493,8 @@ verification result."""
         try:
             result = await structured_model.ainvoke(messages)
             status = (
-                VerificationStatus.PASSED if result.passed
+                VerificationStatus.PASSED
+                if result.passed
                 else VerificationStatus.FAILED
             )
             return VerificationResult(
@@ -652,309 +665,6 @@ verification result."""
 
         # 3. Custom verifier execution
         custom_results = self._run_custom_verifiers(assigned_task, output, context)
-        results.extend(custom_results)
-
-        # Aggregate all results
-        return self._aggregate_results(results)
-
-
-class FinalResultVerifier:
-    """Final result verifier.
-
-    Verifies whether the synthesized final result adequately satisfies the
-    user's original prompt. The verification target is state.prompt (the
-    user's original input), NOT the individual task assignments.
-
-    This verifier performs two types of validation:
-    1. LLM-based semantic verification - checks if final result addresses
-       the original user requirement
-    2. Custom verifier execution - runs any registered custom verifiers
-
-    The FinalResultVerifier is used after synthesize_results to ensure the
-    complete user requirement is satisfied before returning the final output.
-
-    Attributes:
-        model_name: The LLM model to use for verification.
-        api_key: API key for the LLM provider.
-        base_url: Base URL for the LLM API.
-        custom_verifiers: List of custom verifier instances.
-
-    Example:
-        >>> verifier = FinalResultVerifier(model_name="gpt-4o")
-        >>> result = await verifier.verify(
-        ...     original_prompt="What is the capital of France?",
-        ...     final_result="The capital of France is Paris.",
-        ...     worker_results=[{"agent_id": "geo", "result": "Paris"}],
-        ... )
-        >>> print(result.status)
-        VerificationStatus.PASSED
-    """
-
-    VERIFICATION_SYSTEM_PROMPT = """You are a verification agent responsible for \
-checking if the final synthesized result adequately satisfies the user's original \
-request.
-
-Your job is to verify:
-1. The final result directly addresses the user's original question/request
-2. The result is complete and covers all aspects of the original request
-3. The result is coherent and well-structured
-4. No critical information is missing from the response
-
-Be strict but fair. If the result reasonably addresses the user's original request, \
-mark it as passed. If there are significant gaps, missing information, or the result \
-doesn't fully address the original request, mark it as failed and provide specific \
-improvement suggestions."""
-
-    def __init__(
-        self,
-        model_name: str = "gpt-4o",
-        api_key: str | None = None,
-        base_url: str | None = None,
-        custom_verifiers: list[Verifier] | None = None,
-    ):
-        """Initialize the FinalResultVerifier.
-
-        Args:
-            model_name: The LLM model to use for verification.
-            api_key: API key for the LLM provider.
-            base_url: Base URL for the LLM API.
-            custom_verifiers: List of custom verifier instances.
-        """
-        self.model_name = model_name
-        self.api_key = api_key
-        self.base_url = base_url
-        self.custom_verifiers = custom_verifiers or []
-
-    def _create_model(self) -> ChatOpenAI:
-        """Create a ChatOpenAI instance for verification."""
-        kwargs: dict[str, Any] = {"model": self.model_name}
-        if self.api_key:
-            kwargs["api_key"] = self.api_key
-        if self.base_url:
-            kwargs["base_url"] = self.base_url
-        return ChatOpenAI(**kwargs)
-
-    async def _verify_with_llm(
-        self,
-        original_prompt: str,
-        final_result: str,
-        worker_results: list[dict[str, Any]] | None = None,
-    ) -> VerificationResult:
-        """Verify final result using LLM-based semantic analysis.
-
-        Args:
-            original_prompt: The user's original request/question.
-            final_result: The synthesized final result.
-            worker_results: Optional list of worker results for context.
-
-        Returns:
-            VerificationResult from LLM analysis.
-        """
-        model = self._create_model()
-        structured_model = model.with_structured_output(LLMVerificationResult)
-
-        # Build context from worker results if available
-        worker_context = ""
-        if worker_results:
-            worker_summaries = []
-            for i, wr in enumerate(worker_results, 1):
-                agent_id = wr.get("agent_id", f"worker_{i}")
-                result = wr.get("result", "No result")
-                worker_summaries.append(f"- {agent_id}: {result[:200]}...")
-            worker_context = f"""
-
-WORKER RESULTS (for context):
-{chr(10).join(worker_summaries)}"""
-
-        messages = [
-            SystemMessage(content=self.VERIFICATION_SYSTEM_PROMPT),
-            HumanMessage(
-                content=f"""Please verify if the following final result adequately \
-satisfies the user's original request.
-
-USER'S ORIGINAL REQUEST:
-{original_prompt}
-
-FINAL SYNTHESIZED RESULT:
-{final_result}{worker_context}
-
-Analyze whether the final result completely addresses the user's original request \
-and provide your verification result."""
-            ),
-        ]
-
-        try:
-            result = await structured_model.ainvoke(messages)
-            status = (
-                VerificationStatus.PASSED if result.passed
-                else VerificationStatus.FAILED
-            )
-            return VerificationResult(
-                status=status,
-                rejection_reason=result.rejection_reason,
-                improvement_suggestions=result.improvement_suggestions,
-                confidence=result.confidence,
-                validator_name="final_llm_verifier",
-            )
-        except Exception as e:
-            # If LLM verification fails, skip with warning
-            return VerificationResult(
-                status=VerificationStatus.SKIPPED,
-                rejection_reason=f"LLM verification failed: {e}",
-                validator_name="final_llm_verifier",
-            )
-
-    def _run_custom_verifiers(
-        self,
-        original_prompt: str,
-        final_result: str,
-        context: dict[str, Any] | None = None,
-    ) -> list[VerificationResult]:
-        """Run all custom verifiers.
-
-        Args:
-            original_prompt: The user's original request/question.
-            final_result: The synthesized final result.
-            context: Optional additional context.
-
-        Returns:
-            List of VerificationResults from custom verifiers.
-        """
-        results = []
-        for verifier in self.custom_verifiers:
-            try:
-                result = verifier.verify(original_prompt, final_result, context)
-                results.append(result)
-            except Exception as e:
-                # If a custom verifier fails, add a skipped result
-                results.append(
-                    VerificationResult(
-                        status=VerificationStatus.SKIPPED,
-                        rejection_reason=f"Custom verifier error: {e}",
-                        validator_name=getattr(verifier, "_verifier_name", "custom"),
-                    )
-                )
-        return results
-
-    def _aggregate_results(
-        self,
-        results: list[VerificationResult],
-    ) -> VerificationResult:
-        """Aggregate multiple verification results into a single result.
-
-        The aggregation logic:
-        - If any result is FAILED, the aggregate is FAILED
-        - If all results are PASSED or SKIPPED, the aggregate is PASSED
-        - Rejection reasons and suggestions are combined
-
-        Args:
-            results: List of VerificationResults to aggregate.
-
-        Returns:
-            Single aggregated VerificationResult.
-        """
-        if not results:
-            return VerificationResult(
-                status=VerificationStatus.PASSED,
-                validator_name="final_aggregate",
-            )
-
-        # Check for any failures
-        failed_results = [r for r in results if r.status == VerificationStatus.FAILED]
-
-        if failed_results:
-            # Combine all rejection reasons and suggestions
-            rejection_reasons = [
-                r.rejection_reason for r in failed_results if r.rejection_reason
-            ]
-            all_suggestions = []
-            all_field_errors = {}
-
-            for r in failed_results:
-                all_suggestions.extend(r.improvement_suggestions)
-                all_field_errors.update(r.field_errors)
-
-            # Calculate average confidence from non-skipped results
-            non_skipped = [r for r in results if r.status != VerificationStatus.SKIPPED]
-            avg_confidence = (
-                sum(r.confidence for r in non_skipped) / len(non_skipped)
-                if non_skipped
-                else 1.0
-            )
-
-            return VerificationResult(
-                status=VerificationStatus.FAILED,
-                rejection_reason=(
-                    "; ".join(rejection_reasons) if rejection_reasons else None
-                ),
-                improvement_suggestions=all_suggestions,
-                field_errors=all_field_errors,
-                confidence=avg_confidence,
-                validator_name="final_aggregate",
-            )
-
-        # All passed or skipped
-        non_skipped = [r for r in results if r.status != VerificationStatus.SKIPPED]
-        avg_confidence = (
-            sum(r.confidence for r in non_skipped) / len(non_skipped)
-            if non_skipped
-            else 1.0
-        )
-
-        return VerificationResult(
-            status=VerificationStatus.PASSED,
-            confidence=avg_confidence,
-            validator_name="final_aggregate",
-        )
-
-    async def verify(
-        self,
-        original_prompt: str,
-        final_result: str,
-        worker_results: list[dict[str, Any]] | None = None,
-        context: dict[str, Any] | None = None,
-    ) -> VerificationResult:
-        """Verify final result against the user's original prompt.
-
-        Performs verification in the following order:
-        1. LLM-based semantic verification
-        2. Custom verifier execution
-
-        All results are aggregated into a single VerificationResult.
-
-        Args:
-            original_prompt: The user's original request/question. This is
-                the state.prompt value, representing what the user actually
-                asked for.
-            final_result: The synthesized final result from synthesize_results.
-            worker_results: Optional list of worker results for additional
-                context during verification.
-            context: Optional additional context for custom verifiers.
-
-        Returns:
-            Aggregated VerificationResult with status and details.
-
-        Example:
-            >>> verifier = FinalResultVerifier()
-            >>> result = await verifier.verify(
-            ...     original_prompt="Explain quantum computing",
-            ...     final_result="Quantum computing uses qubits...",
-            ...     worker_results=[{"agent_id": "expert", "result": "..."}],
-            ... )
-            >>> assert result.status == VerificationStatus.PASSED
-        """
-        results: list[VerificationResult] = []
-
-        # 1. LLM-based semantic verification
-        llm_result = await self._verify_with_llm(
-            original_prompt, final_result, worker_results
-        )
-        results.append(llm_result)
-
-        # 2. Custom verifier execution
-        custom_results = self._run_custom_verifiers(
-            original_prompt, final_result, context
-        )
         results.extend(custom_results)
 
         # Aggregate all results

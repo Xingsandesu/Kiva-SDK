@@ -35,6 +35,41 @@ class TestKivaInitialization:
         )
         assert kiva.temperature == 0.5
 
+    def test_create_kiva_with_worker_recursion_limit(self):
+        """Test configuring worker recursion limit."""
+        kiva = Kiva(
+            base_url="http://test",
+            api_key="test-key",
+            model="test-model",
+            worker_recursion_limit=7,
+        )
+        assert kiva.worker_recursion_limit == 7
+
+
+def test_kiva_stream_passes_worker_recursion_limit(monkeypatch):
+    from kiva.events import StreamEvent
+
+    async def fake_run(**kwargs):
+        assert kwargs["worker_recursion_limit"] == 9
+        yield StreamEvent(
+            type="final_result",
+            data={"result": "ok", "execution_id": "e"},
+            timestamp=0.0,
+        )
+
+    monkeypatch.setattr("kiva.run.run", fake_run)
+
+    kiva = Kiva(
+        base_url="http://test",
+        api_key="test-key",
+        model="test-model",
+        worker_recursion_limit=9,
+    )
+    stream = kiva.run("x", console=False)
+    for _ in stream:
+        pass
+    assert stream.result() == "ok"
+
     @given(
         temperature=st.floats(min_value=0.0, max_value=2.0),
     )

@@ -42,8 +42,12 @@ async def execute_instance_node(
     # Get agents from configurable or use empty list
     # Note: In Send-based execution, we need to pass agents via config
     agents = []
+    worker_recursion_limit = 100
     if config and "configurable" in config:
         agents = config["configurable"].get("agents", [])
+        worker_recursion_limit = config["configurable"].get(
+            "worker_recursion_limit", worker_recursion_limit
+        )
 
     emit_event(
         {
@@ -70,6 +74,9 @@ async def execute_instance_node(
             "instance_contexts": [context],
         }
 
+    recursion_limit = (
+        getattr(agent, "kiva_recursion_limit", None) or worker_recursion_limit
+    )
     result = await execute_agent_instance(
         agent=agent,
         instance_id=instance_id,
@@ -77,6 +84,7 @@ async def execute_instance_node(
         task=task,
         context=context,
         execution_id=execution_id,
+        recursion_limit=recursion_limit,
     )
 
     emit_event(
@@ -100,6 +108,8 @@ async def execute_instances_batch(
     instances: list[dict],
     agents: list,
     execution_id: str,
+    *,
+    worker_recursion_limit: int = 100,
 ) -> list[dict[str, Any]]:
     """Execute multiple agent instances in parallel.
 
@@ -110,6 +120,7 @@ async def execute_instances_batch(
         instances: List of instance configurations with agent_id, task, context.
         agents: List of available agent definitions.
         execution_id: Parent execution ID for correlation.
+        worker_recursion_limit: Optional max internal steps for agent execution.
 
     Returns:
         List of result dictionaries from all instances.
@@ -144,6 +155,9 @@ async def execute_instances_batch(
 
             tasks.append(make_error())
         else:
+            recursion_limit = (
+                getattr(agent, "kiva_recursion_limit", None) or worker_recursion_limit
+            )
             tasks.append(
                 execute_agent_instance(
                     agent=agent,
@@ -152,6 +166,7 @@ async def execute_instances_batch(
                     task=task,
                     context=context,
                     execution_id=execution_id,
+                    recursion_limit=recursion_limit,
                 )
             )
 

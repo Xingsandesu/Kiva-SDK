@@ -20,14 +20,10 @@ from rich.table import Table
 from rich.text import Text
 
 from kiva.events import (
-    FINAL_VERIFICATION_ERROR,
-    FINAL_VERIFICATION_FAILED,
-    FINAL_VERIFICATION_MAX_REACHED,
-    FINAL_VERIFICATION_PASSED,
-    FINAL_VERIFICATION_START,
     RETRY_COMPLETED,
     RETRY_SKIPPED,
     RETRY_TRIGGERED,
+    VERIFICATION_STATE_CHANGED,
     WORKER_VERIFICATION_ERROR,
     WORKER_VERIFICATION_FAILED,
     WORKER_VERIFICATION_MAX_REACHED,
@@ -61,7 +57,7 @@ class KivaLiveRenderer:
         self.color_index = 0
         self.parallel_strategy: str = "none"
         self.total_instances: int = 0
-        
+
         # Verification state tracking
         self.worker_verification_state: dict = {
             "status": "pending",  # pending, verifying, passed, failed, max_reached
@@ -70,17 +66,13 @@ class KivaLiveRenderer:
             "failed_agents": [],
             "results": [],
         }
-        self.final_verification_state: dict = {
-            "status": "pending",  # pending, verifying, passed, failed, max_reached
-            "iteration": 0,
-            "max_iterations": 2,
-            "rejection_reason": None,
-        }
         self.retry_state: dict = {
             "active": False,
             "iteration": 0,
             "agents": [],
         }
+        self.verification_timeline: list[dict] = []
+        self.verification_current: dict | None = None
 
     def _get_agent_color(self, agent_id: str) -> str:
         """Get the assigned color for an agent."""
@@ -119,7 +111,6 @@ class KivaLiveRenderer:
             "executing",
             "verifying",
             "synthesizing",
-            "final_verify",
             "complete",
         ]
         phase_icons = {
@@ -128,7 +119,6 @@ class KivaLiveRenderer:
             "executing": ("[>]", "green"),
             "verifying": ("[?]", "cyan"),
             "synthesizing": ("[*]", "magenta"),
-            "final_verify": ("[!]", "blue"),
             "complete": ("[v]", "bold green"),
         }
         text = Text()
@@ -349,7 +339,7 @@ class KivaLiveRenderer:
             "Status",
             Text(f"{icon} {status.upper()}", style=f"bold {style}"),
         )
-        
+
         # Iteration progress
         iteration = state.get("iteration", 0)
         max_iterations = state.get("max_iterations", 3)
@@ -373,98 +363,86 @@ class KivaLiveRenderer:
                 border_style="cyan",
                 box=ROUNDED,
             )
-        
-        return Panel(table, title=title, border_style="cyan", box=ROUNDED)
 
-    def _render_final_verification_panel(self) -> Panel | None:
-        """Render the final verification status panel."""
-        state = self.final_verification_state
-        status = state.get("status", "pending")
-        
-        if status == "pending":
-            return None
-        
-        table = Table(
-            box=ROUNDED, show_header=False, border_style="blue", padding=(0, 1)
-        )
-        table.add_column("", style="bold blue")
-        table.add_column("", style="white")
-        
-        # Status row with icon
-        status_icons = {
-            "verifying": ("🔍", "yellow"),
-            "passed": ("✓", "green"),
-            "failed": ("✗", "red"),
-            "max_reached": ("⚠", "yellow"),
-        }
-        icon, style = status_icons.get(status, ("?", "dim"))
-        table.add_row(
-            "Status",
-            Text(f"{icon} {status.upper()}", style=f"bold {style}"),
-        )
-        
-        # Iteration progress
-        iteration = state.get("iteration", 0)
-        max_iterations = state.get("max_iterations", 2)
-        progress_text = f"{iteration}/{max_iterations}"
-        table.add_row("Workflow Iteration", Text(progress_text, style="blue"))
-        
-        # Rejection reason (if any)
-        rejection_reason = state.get("rejection_reason")
-        if rejection_reason:
-            reason_text = (
-                rejection_reason[:60] + "..."
-                if len(rejection_reason) > 60
-                else rejection_reason
-            )
-            table.add_row("Reason", Text(reason_text, style="red italic"))
-        
-        title = "[blue]Final Verification[/]"
-        if status == "verifying":
-            spinner = Spinner(
-                "dots", text="Verifying final result...", style="blue"
-            )
-            return Panel(
-                spinner,
-                title=title,
-                border_style="blue",
-                box=ROUNDED,
-            )
-        
-        return Panel(table, title=title, border_style="blue", box=ROUNDED)
+        return Panel(table, title=title, border_style="cyan", box=ROUNDED)
 
     def _render_retry_panel(self) -> Panel | None:
         """Render the retry status panel."""
         if not self.retry_state.get("active", False):
             return None
-        
+
         iteration = self.retry_state.get("iteration", 0)
         agents = self.retry_state.get("agents", [])
-        
+
         table = Table(
             box=ROUNDED, show_header=False, border_style="yellow", padding=(0, 1)
         )
         table.add_column("", style="bold yellow")
         table.add_column("", style="white")
-        
+
         table.add_row(
             "Status",
             Text("🔄 RETRYING", style="bold yellow"),
         )
         table.add_row("Retry Attempt", Text(str(iteration), style="yellow"))
-        
+
         if agents:
             agents_text = ", ".join(agents[:3])
             if len(agents) > 3:
                 agents_text += f" (+{len(agents) - 3} more)"
             table.add_row("Retrying Agents", Text(agents_text, style="yellow"))
-        
+
         return Panel(
             table,
             title="[yellow]Worker Retry[/]",
             border_style="yellow",
             box=ROUNDED,
         )
+
+    def _render_verification_timeline_panel(self, limit: int = 12) -> Panel | None:
+        if not self.verification_timeline:
+            return None
+
+        timeline = self.verification_timeline
+        start_ts = timeline[0].get("timestamp", 0.0) if timeline else 0.0
+        view = timeline[-limit:] if limit > 0 else timeline
+
+        table = Table(
+            box=ROUNDED,
+            show_header=True,
+            border_style="dim",
+            padding=(0, 1),
+        )
+        table.add_column("#", style="dim", width=4, justify="right")
+        table.add_column("t+", style="dim", width=8, justify="right")
+        table.add_column("Scope", style="bold")
+        table.add_column("State", style="white")
+        table.add_column("Message", style="dim")
+
+        for idx, entry in enumerate(view, start=max(0, len(timeline) - len(view))):
+            ts = float(entry.get("timestamp", 0.0))
+            dt = ts - float(start_ts or ts)
+            scope = str(entry.get("scope", ""))
+            state = str(entry.get("state", ""))
+            msg = entry.get("message") or ""
+            style = "dim"
+            if self.verification_current and entry is timeline[-1]:
+                style = "bold cyan"
+            table.add_row(
+                str(idx),
+                f"{dt:0.2f}s",
+                Text(scope, style=style),
+                Text(state, style=style),
+                Text(str(msg)[:80], style="dim"),
+            )
+
+        title = "[dim]Verification Timeline[/]"
+        if self.verification_current:
+            cur_scope = self.verification_current.get("scope", "")
+            cur_state = self.verification_current.get("state", "")
+            title = f"[dim]Verification Timeline[/] [cyan]{cur_scope}:{cur_state}[/]"
+
+        return Panel(table, title=title, border_style="dim", box=ROUNDED)
 
     def _render_final_result(self) -> Panel | None:
         """Render the final result panel with citations."""
@@ -571,6 +549,9 @@ class KivaLiveRenderer:
             if retry := self._render_retry_panel():
                 components.append(Text())
                 components.append(retry)
+            if timeline := self._render_verification_timeline_panel():
+                components.append(Text())
+                components.append(timeline)
         elif self.phase == "synthesizing":
             if wf := self._render_workflow_info():
                 components.append(wf)
@@ -583,20 +564,6 @@ class KivaLiveRenderer:
                 components.append(worker_verify)
                 components.append(Text())
             components.append(self._render_synthesizing())
-        elif self.phase == "final_verify":
-            if wf := self._render_workflow_info():
-                components.append(wf)
-                components.append(Text())
-            if agents := self._render_agents_status():
-                components.append(agents)
-                components.append(Text())
-            # Show worker verification result
-            if worker_verify := self._render_worker_verification_panel():
-                components.append(worker_verify)
-                components.append(Text())
-            # Show final verification panel
-            if final_verify := self._render_final_verification_panel():
-                components.append(final_verify)
         elif self.phase == "complete":
             if wf := self._render_workflow_info():
                 components.append(wf)
@@ -608,8 +575,8 @@ class KivaLiveRenderer:
             if worker_verify := self._render_worker_verification_panel():
                 components.append(worker_verify)
                 components.append(Text())
-            if final_verify := self._render_final_verification_panel():
-                components.append(final_verify)
+            if timeline := self._render_verification_timeline_panel(limit=0):
+                components.append(timeline)
                 components.append(Text())
             if final := self._render_final_result():
                 components.append(final)
@@ -812,45 +779,71 @@ class KivaLiveRenderer:
             self.agent_states[agent_id]["result"] = f"Error: {error}"
 
     # Verification event handlers
+    def on_verification_state_changed(self, verification_status: dict):
+        """Handle verification lifecycle state change."""
+        self.verification_current = verification_status
+        timeline = verification_status.get("timeline")
+        if isinstance(timeline, list):
+            self.verification_timeline = timeline
+
+        scope = verification_status.get("scope")
+        state = verification_status.get("state")
+
+        if scope == "worker" and self.phase in ("executing", "synthesizing"):
+            self.phase = "verifying"
+        if scope == "retry":
+            if state in ("retry_waiting", "retry_running"):
+                self.retry_state["active"] = True
+            if state == "completed":
+                self.retry_state["active"] = False
+
     def on_worker_verification_start(self, iteration: int, max_iterations: int):
         """Handle worker verification start event."""
         self.phase = "verifying"
-        self.worker_verification_state.update({
-            "status": "verifying",
-            "iteration": iteration,
-            "max_iterations": max_iterations,
-            "failed_agents": [],
-        })
+        self.worker_verification_state.update(
+            {
+                "status": "verifying",
+                "iteration": iteration,
+                "max_iterations": max_iterations,
+                "failed_agents": [],
+            }
+        )
 
     def on_worker_verification_passed(self, iteration: int, results: list):
         """Handle worker verification passed event."""
-        self.worker_verification_state.update({
-            "status": "passed",
-            "iteration": iteration,
-            "results": results,
-            "failed_agents": [],
-        })
+        self.phase = "synthesizing"
+        self.worker_verification_state.update(
+            {
+                "status": "passed",
+                "iteration": iteration,
+                "results": results,
+                "failed_agents": [],
+            }
+        )
 
     def on_worker_verification_failed(
         self, iteration: int, failed_agents: list, results: list
     ):
         """Handle worker verification failed event."""
-        self.worker_verification_state.update({
-            "status": "failed",
-            "iteration": iteration,
-            "failed_agents": failed_agents,
-            "results": results,
-        })
+        self.worker_verification_state.update(
+            {
+                "status": "failed",
+                "iteration": iteration,
+                "failed_agents": failed_agents,
+                "results": results,
+            }
+        )
 
-    def on_worker_verification_max_reached(
-        self, iteration: int, failed_agents: list
-    ):
+    def on_worker_verification_max_reached(self, iteration: int, failed_agents: list):
         """Handle worker verification max iterations reached event."""
-        self.worker_verification_state.update({
-            "status": "max_reached",
-            "iteration": iteration,
-            "failed_agents": failed_agents,
-        })
+        self.phase = "synthesizing"
+        self.worker_verification_state.update(
+            {
+                "status": "max_reached",
+                "iteration": iteration,
+                "failed_agents": failed_agents,
+            }
+        )
 
     def on_worker_verification_error(self, error: str, action: str):
         """Handle worker verification error event (graceful degradation).
@@ -858,68 +851,23 @@ class KivaLiveRenderer:
         This is called when the verifier itself fails, triggering graceful
         degradation where verification is bypassed.
         """
-        self.worker_verification_state.update({
-            "status": "error",
-            "error": error,
-            "action": action,
-        })
-
-    def on_final_verification_start(self, iteration: int, max_iterations: int):
-        """Handle final verification start event."""
-        self.phase = "final_verify"
-        self.final_verification_state.update({
-            "status": "verifying",
-            "iteration": iteration,
-            "max_iterations": max_iterations,
-            "rejection_reason": None,
-        })
-
-    def on_final_verification_passed(self, iteration: int):
-        """Handle final verification passed event."""
-        self.final_verification_state.update({
-            "status": "passed",
-            "iteration": iteration,
-        })
-
-    def on_final_verification_failed(
-        self, iteration: int, rejection_reason: str | None
-    ):
-        """Handle final verification failed event."""
-        self.final_verification_state.update({
-            "status": "failed",
-            "iteration": iteration,
-            "rejection_reason": rejection_reason,
-        })
-
-    def on_final_verification_max_reached(
-        self, iteration: int, rejection_reason: str | None
-    ):
-        """Handle final verification max iterations reached event."""
-        self.final_verification_state.update({
-            "status": "max_reached",
-            "iteration": iteration,
-            "rejection_reason": rejection_reason,
-        })
-
-    def on_final_verification_error(self, error: str, action: str):
-        """Handle final verification error event (graceful degradation).
-
-        This is called when the verifier itself fails, triggering graceful
-        degradation where verification is bypassed.
-        """
-        self.final_verification_state.update({
-            "status": "error",
-            "error": error,
-            "action": action,
-        })
+        self.worker_verification_state.update(
+            {
+                "status": "error",
+                "error": error,
+                "action": action,
+            }
+        )
 
     def on_retry_triggered(self, iteration: int, agents: list):
         """Handle retry triggered event."""
-        self.retry_state.update({
-            "active": True,
-            "iteration": iteration,
-            "agents": agents,
-        })
+        self.retry_state.update(
+            {
+                "active": True,
+                "iteration": iteration,
+                "agents": agents,
+            }
+        )
         # Reset agent states for retrying agents
         for agent_id in agents:
             if agent_id in self.agent_states:
@@ -927,16 +875,20 @@ class KivaLiveRenderer:
 
     def on_retry_completed(self, iteration: int, results: list):
         """Handle retry completed event."""
-        self.retry_state.update({
-            "active": False,
-            "iteration": iteration,
-        })
+        self.retry_state.update(
+            {
+                "active": False,
+                "iteration": iteration,
+            }
+        )
 
     def on_retry_skipped(self):
         """Handle retry skipped event."""
-        self.retry_state.update({
-            "active": False,
-        })
+        self.retry_state.update(
+            {
+                "active": False,
+            }
+        )
 
 
 async def run_with_console(
@@ -947,6 +899,7 @@ async def run_with_console(
     model_name: str,
     refresh_per_second: int = 12,
     max_iterations: int = 10,
+    worker_recursion_limit: int = 25,
     custom_verifiers: list | None = None,
 ) -> str | None:
     """Run orchestration with rich console visualization.
@@ -962,6 +915,7 @@ async def run_with_console(
         model_name: Model identifier for the lead agent.
         refresh_per_second: Console refresh rate. Defaults to 12.
         max_iterations: Maximum iterations for verification retry. Defaults to 10.
+        worker_recursion_limit: Maximum internal steps per Worker Agent execution.
         custom_verifiers: List of custom verifier functions. Defaults to None.
 
     Returns:
@@ -993,9 +947,15 @@ async def run_with_console(
             api_key=api_key,
             model_name=model_name,
             max_iterations=max_iterations,
+            worker_recursion_limit=worker_recursion_limit,
+            custom_verifiers=custom_verifiers or [],
         ):
             if event.type == "token":
                 renderer.on_token(event.data["content"])
+            elif event.type == VERIFICATION_STATE_CHANGED:
+                renderer.on_verification_state_changed(
+                    event.data.get("verification_status") or event.data
+                )
             elif event.type == "workflow_selected":
                 renderer.on_workflow_selected(
                     event.data["workflow"],
@@ -1125,31 +1085,6 @@ async def run_with_console(
                 )
             elif event.type == WORKER_VERIFICATION_ERROR:
                 renderer.on_worker_verification_error(
-                    event.data.get("error", "Unknown error"),
-                    event.data.get("action", "bypass_verification"),
-                )
-            # Final verification events
-            elif event.type == FINAL_VERIFICATION_START:
-                renderer.on_final_verification_start(
-                    event.data.get("iteration", 0),
-                    event.data.get("max_iterations", 2),
-                )
-            elif event.type == FINAL_VERIFICATION_PASSED:
-                renderer.on_final_verification_passed(
-                    event.data.get("iteration", 0),
-                )
-            elif event.type == FINAL_VERIFICATION_FAILED:
-                renderer.on_final_verification_failed(
-                    event.data.get("iteration", 0),
-                    event.data.get("reason"),
-                )
-            elif event.type == FINAL_VERIFICATION_MAX_REACHED:
-                renderer.on_final_verification_max_reached(
-                    event.data.get("iteration", 0),
-                    event.data.get("reason"),
-                )
-            elif event.type == FINAL_VERIFICATION_ERROR:
-                renderer.on_final_verification_error(
                     event.data.get("error", "Unknown error"),
                     event.data.get("action", "bypass_verification"),
                 )

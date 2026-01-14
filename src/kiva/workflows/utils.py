@@ -168,7 +168,11 @@ def extract_content(result: Any) -> str:
 
 
 async def execute_single_agent(
-    agent: Any, agent_id: str, task: str, execution_id: str = ""
+    agent: Any,
+    agent_id: str,
+    task: str,
+    execution_id: str = "",
+    recursion_limit: int | None = None,
 ) -> dict[str, Any]:
     """Execute a single agent and return the result with event emission.
 
@@ -180,6 +184,7 @@ async def execute_single_agent(
         agent_id: Identifier for the agent being executed.
         task: The task/prompt to send to the agent.
         execution_id: Parent execution ID for correlation.
+        recursion_limit: Optional max internal steps for agent execution.
 
     Returns:
         Dictionary with agent_id, invocation_id, result, and optional error fields.
@@ -198,7 +203,16 @@ async def execute_single_agent(
             }
         )
 
-        result = await agent.ainvoke({"messages": [{"role": "user", "content": task}]})
+        config = {"recursion_limit": recursion_limit} if recursion_limit else None
+        try:
+            result = await agent.ainvoke(
+                {"messages": [{"role": "user", "content": task}]},
+                config=config,
+            )
+        except TypeError:
+            result = await agent.ainvoke(
+                {"messages": [{"role": "user", "content": task}]}
+            )
         content = extract_content(result)
 
         emit_event(
@@ -233,6 +247,7 @@ async def execute_agent_instance(
     task: str,
     context: dict,
     execution_id: str = "",
+    recursion_limit: int | None = None,
 ) -> dict[str, Any]:
     """Execute an agent instance with isolated context.
 
@@ -246,6 +261,7 @@ async def execute_agent_instance(
         task: The task/prompt to send to the agent.
         context: Instance-specific context/scratchpad.
         execution_id: Parent execution ID for correlation.
+        recursion_limit: Optional max internal steps for agent execution.
 
     Returns:
         Dictionary with instance_id, agent_id, result, context, and optional error.
@@ -269,9 +285,16 @@ async def execute_agent_instance(
                 str(s) for s in context["scratchpad"]
             )
 
-        result = await agent.ainvoke(
-            {"messages": [{"role": "user", "content": task_with_context}]}
-        )
+        config = {"recursion_limit": recursion_limit} if recursion_limit else None
+        try:
+            result = await agent.ainvoke(
+                {"messages": [{"role": "user", "content": task_with_context}]},
+                config=config,
+            )
+        except TypeError:
+            result = await agent.ainvoke(
+                {"messages": [{"role": "user", "content": task_with_context}]}
+            )
         content = extract_content(result)
 
         # Update context with result

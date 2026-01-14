@@ -70,7 +70,7 @@ def get_weather(city: str) -> str:
     """Get weather for a city."""
     return f"{city}: Sunny, 25°C"
 
-result = kiva.run("What's the weather in Beijing?", console=False)
+result = kiva.run("What's the weather in Beijing?", console=False).result()
 print(result)
 ```
 
@@ -154,7 +154,7 @@ def get_weather(city: str) -> str:
 def calculate(expression: str) -> str:
     return str(eval(expression))
 
-result = kiva.run("What's the weather in Tokyo? Also calculate 25 * 4", console=False)
+result = kiva.run("What's the weather in Tokyo? Also calculate 25 * 4", console=False).result()
 print(result)
 ```
 
@@ -225,7 +225,7 @@ def get_weather(city: str) -> str:
 def search(query: str) -> str:
     return f"Results for: {query}"
 
-result = kiva.run("Should I go outside today? Check weather and give advice", console=False)
+result = kiva.run("Should I go outside today? Check weather and give advice", console=False).result()
 print(result)
 ```
 
@@ -338,7 +338,7 @@ def get_weather(city: str) -> str:
     }
     return cities.get(city.lower(), f"{city}: Weather unavailable")
 
-result = kiva.run("Get weather for Beijing, Tokyo, and London", console=False)
+result = kiva.run("Get weather for Beijing, Tokyo, and London", console=False).result()
 print(result)
 ```
 
@@ -433,7 +433,7 @@ result = await kiva.run_async("What's the weather in Paris?", console=False)
 print(result)
 
 # Sync usage (not in async context)
-result = kiva.run("What's the weather in Paris?", console=False)
+result = kiva.run("What's the weather in Paris?", console=False).result()
 print(result)
 ```
 

@@ -130,7 +130,12 @@ async def _execute_with_instances(
     )
 
     # Execute all instances
-    results = await execute_instances_batch(instances, agents, execution_id)
+    results = await execute_instances_batch(
+        instances,
+        agents,
+        execution_id,
+        worker_recursion_limit=state.get("worker_recursion_limit", 25),
+    )
 
     # Convert instance results to agent_results format
     agent_results = []
@@ -204,7 +209,18 @@ async def _execute_single_agents(
             invocation_id = generate_invocation_id(execution_id, agent_id)
             tasks.append(make_error_result(agent_id, invocation_id))
         else:
-            tasks.append(execute_single_agent(agent, agent_id, task, execution_id))
+            recursion_limit = getattr(agent, "kiva_recursion_limit", None) or state.get(
+                "worker_recursion_limit", 25
+            )
+            tasks.append(
+                execute_single_agent(
+                    agent,
+                    agent_id,
+                    task,
+                    execution_id,
+                    recursion_limit=recursion_limit,
+                )
+            )
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
 

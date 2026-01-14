@@ -27,7 +27,6 @@ class TestBuildOrchestratorGraph:
             "execute_instance",
             "synthesize_results",
             "verify_worker_output",
-            "verify_final_result",
             "worker_retry",
         }
         # CompiledStateGraph stores nodes in its nodes attribute
@@ -40,11 +39,9 @@ class TestBuildOrchestratorGraph:
         assert "__start__" in graph.nodes
 
     def test_graph_has_end_node(self):
-        """Test that the graph has proper termination (verify_final_result -> END)."""
-        graph = build_orchestrator_graph()
-        # In LangGraph, END is represented differently - verify verify_final_result exists
-        # and the graph structure is valid (it compiled successfully)
-        assert "verify_final_result" in graph.nodes
+        """Test that the graph has proper termination."""
+        build_orchestrator_graph()
+        assert ("synthesize_results", "__end__") in get_graph_edges()
 
 
 class TestGetGraphNodes:
@@ -65,13 +62,12 @@ class TestGetGraphNodes:
         assert "execute_instance" in nodes
         assert "synthesize_results" in nodes
         assert "verify_worker_output" in nodes
-        assert "verify_final_result" in nodes
         assert "worker_retry" in nodes
 
     def test_node_count(self):
         """Test that the correct number of nodes is returned."""
         nodes = get_graph_nodes()
-        assert len(nodes) == 9
+        assert len(nodes) == 8
 
 
 class TestGetGraphEdges:
@@ -111,9 +107,9 @@ class TestGetGraphEdges:
         assert ("worker_retry", "verify_worker_output") in edges
 
     def test_synthesize_to_verify_final_edge(self):
-        """Test that synthesize_results connects to verify_final_result."""
+        """Test that synthesize_results connects to end."""
         edges = get_graph_edges()
-        assert ("synthesize_results", "verify_final_result") in edges
+        assert ("synthesize_results", "__end__") in edges
 
 
 class TestGraphStructure:

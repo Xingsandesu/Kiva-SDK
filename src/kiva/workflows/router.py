@@ -77,6 +77,9 @@ async def router_workflow(state: OrchestratorState) -> dict[str, Any]:
         }
 
     try:
+        recursion_limit = getattr(agent, "kiva_recursion_limit", None) or state.get(
+            "worker_recursion_limit", 25
+        )
         emit_event(
             {
                 "type": "agent_start",
@@ -88,7 +91,15 @@ async def router_workflow(state: OrchestratorState) -> dict[str, Any]:
             }
         )
 
-        result = await agent.ainvoke({"messages": [{"role": "user", "content": task}]})
+        try:
+            result = await agent.ainvoke(
+                {"messages": [{"role": "user", "content": task}]},
+                config={"recursion_limit": recursion_limit},
+            )
+        except TypeError:
+            result = await agent.ainvoke(
+                {"messages": [{"role": "user", "content": task}]}
+            )
         content = extract_content(result)
 
         emit_event(

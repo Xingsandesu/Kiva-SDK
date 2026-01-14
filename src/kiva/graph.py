@@ -21,23 +21,16 @@ Graph Structure:
                                     |
                                     v
                           verify_worker_output
-                                    |
-                        +-----------+-----------+
-                        |                       |
-                    [passed]               [failed]
-                        |                       |
-                        v                       v
-                synthesize_results         worker_retry
-                        |                       |
-                        v                       |
-                verify_final_result <-----------+
-                        |
-            +-----------+-----------+
-            |                       |
-        [passed]               [failed]
-            |                       |
-            v                       v
-          END              analyze_and_plan (restart)
+                                   |
+                       +-----------+-----------+
+                       |                       |
+                   [passed]               [failed]
+                       |                       |
+                       v                       v
+               synthesize_results         worker_retry
+                       |
+                       v
+                      END
 
 The Send API enables dynamic fan-out where the planner can spawn N instances
 of the same agent definition, each with isolated context.
@@ -45,11 +38,8 @@ of the same agent definition, each with isolated context.
 Verification Architecture:
     1. Worker Output Verification: Validates each Worker Agent's output against
        its assigned task (NOT the user's original prompt).
-    2. Final Result Verification: Validates the synthesized result against the
-       user's original prompt.
-    3. Retry Mechanisms:
+    2. Retry Mechanism:
        - Worker level: Retry failed workers with rejection context
-       - Workflow level: Restart entire workflow with different approach
 """
 
 from langgraph.graph import END, START, StateGraph
@@ -59,7 +49,6 @@ from kiva.nodes import (
     analyze_and_plan,
     route_to_workflow,
     synthesize_results,
-    verify_final_result,
     verify_worker_output,
     worker_retry,
 )
@@ -187,7 +176,6 @@ def build_orchestrator_graph() -> StateGraph:
     graph.add_node("synthesize_results", synthesize_results)
     # Add verification nodes
     graph.add_node("verify_worker_output", verify_worker_output)
-    graph.add_node("verify_final_result", verify_final_result)
     graph.add_node("worker_retry", worker_retry)
 
     # Add edges
@@ -226,8 +214,8 @@ def build_orchestrator_graph() -> StateGraph:
     # Worker retry flows back to worker verification
     graph.add_edge("worker_retry", "verify_worker_output")
 
-    # Synthesis flows to final verification
-    graph.add_edge("synthesize_results", "verify_final_result")
+    # Synthesis flows to END (final verification removed)
+    graph.add_edge("synthesize_results", END)
 
     # Final verification uses Command to route to END or restart workflow
     # (no explicit edge needed - Command handles routing)
@@ -249,7 +237,6 @@ def get_graph_nodes() -> list[str]:
         "execute_instance",
         "synthesize_results",
         "verify_worker_output",
-        "verify_final_result",
         "worker_retry",
     ]
 
@@ -270,5 +257,5 @@ def get_graph_edges() -> list[tuple[str, str]]:
         ("supervisor_workflow", "verify_worker_output"),
         ("execute_instance", "verify_worker_output"),
         ("worker_retry", "verify_worker_output"),
-        ("synthesize_results", "verify_final_result"),
+        ("synthesize_results", "__end__"),
     ]

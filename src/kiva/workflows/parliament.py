@@ -119,7 +119,11 @@ def _create_conflict_resolution_tasks(
 
 
 async def _execute_agents_parallel(
-    task_assignments: list[dict], agents: list, execution_id: str, prompt: str
+    task_assignments: list[dict],
+    agents: list,
+    execution_id: str,
+    prompt: str,
+    worker_recursion_limit: int = 100,
 ) -> list[dict]:
     """Execute multiple agents in parallel and collect results.
 
@@ -128,6 +132,7 @@ async def _execute_agents_parallel(
         agents: List of available agent instances.
         execution_id: Parent execution identifier for correlation.
         prompt: Fallback prompt if task not specified in assignment.
+        worker_recursion_limit: Optional max internal steps for agent execution.
 
     Returns:
         List of result dictionaries from all agent executions.
@@ -146,7 +151,18 @@ async def _execute_agents_parallel(
                 )
             )
         else:
-            tasks.append(execute_single_agent(agent, agent_id, task, execution_id))
+            recursion_limit = getattr(agent, "kiva_recursion_limit", None) or (
+                worker_recursion_limit
+            )
+            tasks.append(
+                execute_single_agent(
+                    agent,
+                    agent_id,
+                    task,
+                    execution_id,
+                    recursion_limit=recursion_limit,
+                )
+            )
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -243,7 +259,11 @@ async def parliament_workflow(state: OrchestratorState) -> dict[str, Any]:
         )
 
         agent_results = await _execute_agents_parallel(
-            task_assignments, agents, execution_id, prompt
+            task_assignments,
+            agents,
+            execution_id,
+            prompt,
+            worker_recursion_limit=state.get("worker_recursion_limit", 25),
         )
         conflicts = _identify_conflicts(agent_results)
 
@@ -297,7 +317,11 @@ async def parliament_workflow(state: OrchestratorState) -> dict[str, Any]:
         )
 
         new_results = await _execute_agents_parallel(
-            resolution_tasks, agents, execution_id, prompt
+            resolution_tasks,
+            agents,
+            execution_id,
+            prompt,
+            worker_recursion_limit=state.get("worker_recursion_limit", 25),
         )
 
         # Merge results

@@ -31,12 +31,6 @@ Event Types:
         - worker_verification_failed: One or more workers failed verification
         - worker_verification_max_reached: Max worker verification iterations exceeded
 
-    Final Verification Events:
-        - final_verification_start: Final result verification initiated
-        - final_verification_passed: Final result passed verification
-        - final_verification_failed: Final result failed verification
-        - final_verification_max_reached: Max workflow iterations exceeded
-
     Retry Events:
         - retry_triggered: Worker retry execution initiated
         - retry_completed: Worker retry execution completed
@@ -46,7 +40,6 @@ Event Types:
 from dataclasses import asdict, dataclass
 from typing import Any
 
-
 # Worker Verification Event Types
 WORKER_VERIFICATION_START = "worker_verification_start"
 WORKER_VERIFICATION_PASSED = "worker_verification_passed"
@@ -54,17 +47,13 @@ WORKER_VERIFICATION_FAILED = "worker_verification_failed"
 WORKER_VERIFICATION_MAX_REACHED = "worker_verification_max_reached"
 WORKER_VERIFICATION_ERROR = "worker_verification_error"
 
-# Final Verification Event Types
-FINAL_VERIFICATION_START = "final_verification_start"
-FINAL_VERIFICATION_PASSED = "final_verification_passed"
-FINAL_VERIFICATION_FAILED = "final_verification_failed"
-FINAL_VERIFICATION_MAX_REACHED = "final_verification_max_reached"
-FINAL_VERIFICATION_ERROR = "final_verification_error"
-
 # Retry Event Types
 RETRY_TRIGGERED = "retry_triggered"
 RETRY_COMPLETED = "retry_completed"
 RETRY_SKIPPED = "retry_skipped"
+
+# Verification lifecycle/state machine event types
+VERIFICATION_STATE_CHANGED = "verification_state_changed"
 
 # All verification-related event types for easy reference
 WORKER_VERIFICATION_EVENT_TYPES = [
@@ -75,14 +64,6 @@ WORKER_VERIFICATION_EVENT_TYPES = [
     WORKER_VERIFICATION_ERROR,
 ]
 
-FINAL_VERIFICATION_EVENT_TYPES = [
-    FINAL_VERIFICATION_START,
-    FINAL_VERIFICATION_PASSED,
-    FINAL_VERIFICATION_FAILED,
-    FINAL_VERIFICATION_MAX_REACHED,
-    FINAL_VERIFICATION_ERROR,
-]
-
 RETRY_EVENT_TYPES = [
     RETRY_TRIGGERED,
     RETRY_COMPLETED,
@@ -90,9 +71,7 @@ RETRY_EVENT_TYPES = [
 ]
 
 VERIFICATION_EVENT_TYPES = (
-    WORKER_VERIFICATION_EVENT_TYPES
-    + FINAL_VERIFICATION_EVENT_TYPES
-    + RETRY_EVENT_TYPES
+    WORKER_VERIFICATION_EVENT_TYPES + RETRY_EVENT_TYPES + [VERIFICATION_STATE_CHANGED]
 )
 
 
@@ -118,18 +97,6 @@ def is_worker_verification_event(event_type: str) -> bool:
         True if the event type is a worker verification event, False otherwise.
     """
     return event_type in WORKER_VERIFICATION_EVENT_TYPES
-
-
-def is_final_verification_event(event_type: str) -> bool:
-    """Check if an event type is a final verification event.
-
-    Args:
-        event_type: The event type string to check.
-
-    Returns:
-        True if the event type is a final verification event, False otherwise.
-    """
-    return event_type in FINAL_VERIFICATION_EVENT_TYPES
 
 
 def is_retry_event(event_type: str) -> bool:

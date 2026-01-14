@@ -59,8 +59,10 @@ class MathTools:
 
 if __name__ == "__main__":
     # Run with rich console output (default)
-    kiva.run("What's the weather in Beijing? Also calculate 15 * 8")
+   # kiva.run("What's the weather in Beijing? 1000+999999等于多少")
 
     # Silent mode - no rich console output
-    # result = kiva.run("Search for Python information", console=False)
-    # print(result)
+    result = kiva.run("What's the weather in Beijing? Also calculate 15 * 8", console=False)
+    for event in result:
+        print(event.to_dict())
+    print("FINAL:", result.result())

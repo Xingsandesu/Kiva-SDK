@@ -44,7 +44,7 @@ Example:
         kiva.run("What's the weather?")
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -144,6 +144,7 @@ class Kiva:
         model: str,
         temperature: float = 0.7,
         max_iterations: int = 3,
+        worker_recursion_limit: int = 25,
     ):
         """Initialize the Kiva client."""
         self.base_url = base_url
@@ -151,6 +152,7 @@ class Kiva:
         self.model = model
         self.temperature = temperature
         self.max_iterations = max_iterations
+        self.worker_recursion_limit = worker_recursion_limit
         self._agents: list[Agent] = []
         self._verifiers: list[RegisteredVerifier] = []
 
@@ -241,12 +243,14 @@ class Kiva:
 
         def decorator(obj):
             tools = self._to_tools(obj)
-            self._agents.append(Agent(
-                name=name,
-                description=description,
-                tools=tools,
-                max_iterations=max_iterations,
-            ))
+            self._agents.append(
+                Agent(
+                    name=name,
+                    description=description,
+                    tools=tools,
+                    max_iterations=max_iterations,
+                )
+            )
             return obj
 
         return decorator
@@ -357,12 +361,14 @@ class Kiva:
             >>> kiva.add_agent("complex", "Complex task", [task_func], max_iterations=5)
         """
         converted = self._to_tools(tools)
-        self._agents.append(Agent(
-            name=name,
-            description=description,
-            tools=converted,
-            max_iterations=max_iterations,
-        ))
+        self._agents.append(
+            Agent(
+                name=name,
+                description=description,
+                tools=converted,
+                max_iterations=max_iterations,
+            )
+        )
         return self
 
     def include_router(self, router: "AgentRouter", prefix: str = "") -> "Kiva":
@@ -411,6 +417,7 @@ class Kiva:
         prompt: str,
         console: bool = True,
         max_iterations: int | None = None,
+        worker_recursion_limit: int | None = None,
     ) -> str | None:
         """Run orchestration asynchronously.
 
@@ -419,6 +426,8 @@ class Kiva:
             console: Whether to display rich console output. Defaults to True.
             max_iterations: Maximum iterations for verification retry.
                 If None, uses the global default from Kiva instance.
+            worker_recursion_limit: Maximum internal steps per Worker Agent execution.
+                If None, uses the global default from Kiva instance.
 
         Returns:
             Final result string, or None if no result was produced.
@@ -426,6 +435,11 @@ class Kiva:
         agents = self._build_agents()
         effective_max_iterations = (
             max_iterations if max_iterations is not None else self.max_iterations
+        )
+        effective_worker_recursion_limit = (
+            worker_recursion_limit
+            if worker_recursion_limit is not None
+            else self.worker_recursion_limit
         )
 
         if console:
@@ -438,6 +452,7 @@ class Kiva:
                 api_key=self.api_key,
                 model_name=self.model,
                 max_iterations=effective_max_iterations,
+                worker_recursion_limit=effective_worker_recursion_limit,
                 custom_verifiers=self._verifiers,
             )
         else:
@@ -451,6 +466,7 @@ class Kiva:
                 api_key=self.api_key,
                 model_name=self.model,
                 max_iterations=effective_max_iterations,
+                worker_recursion_limit=effective_worker_recursion_limit,
                 custom_verifiers=self._verifiers,
             ):
                 if event.type == "final_result":
@@ -462,7 +478,8 @@ class Kiva:
         prompt: str,
         console: bool = True,
         max_iterations: int | None = None,
-    ) -> str | None:
+        worker_recursion_limit: int | None = None,
+    ) -> str | None | Iterator:
         """Run orchestration synchronously.
 
         Convenience wrapper around run_async for synchronous contexts.
@@ -472,12 +489,131 @@ class Kiva:
             console: Whether to display rich console output. Defaults to True.
             max_iterations: Maximum iterations for verification retry.
                 If None, uses the global default from Kiva instance.
+            worker_recursion_limit: Maximum internal steps per Worker Agent execution.
+                If None, uses the global default from Kiva instance.
 
         Returns:
-            Final result string, or None if no result was produced.
+            When console=True: Final result string, or None if no result was produced.
+            When console=False: Iterable of StreamEvent objects.
         """
         import asyncio
 
-        return asyncio.run(
-            self.run_async(prompt, console=console, max_iterations=max_iterations)
+        if console:
+            return asyncio.run(
+                self.run_async(prompt, console=console, max_iterations=max_iterations)
+            )
+
+        agents = self._build_agents()
+        effective_max_iterations = (
+            max_iterations if max_iterations is not None else self.max_iterations
         )
+
+        return _KivaRunStream(
+            prompt=prompt,
+            agents=agents,
+            base_url=self.base_url,
+            api_key=self.api_key,
+            model_name=self.model,
+            max_iterations=effective_max_iterations,
+            worker_recursion_limit=worker_recursion_limit
+            if worker_recursion_limit is not None
+            else self.worker_recursion_limit,
+            custom_verifiers=self._verifiers,
+        )
+
+
+class _KivaRunStream:
+    def __init__(
+        self,
+        *,
+        prompt: str,
+        agents: list,
+        base_url: str,
+        api_key: str,
+        model_name: str,
+        max_iterations: int,
+        worker_recursion_limit: int,
+        custom_verifiers: list,
+    ):
+        self._prompt = prompt
+        self._agents = agents
+        self._base_url = base_url
+        self._api_key = api_key
+        self._model_name = model_name
+        self._max_iterations = max_iterations
+        self._custom_verifiers = custom_verifiers
+        self._worker_recursion_limit = worker_recursion_limit
+
+        self._events: list = []
+        self._done = False
+        self._final_result: str | None = None
+        self._loop = None
+        self._agen = None
+
+    def __iter__(self) -> Iterator:
+        import asyncio
+
+        idx = 0
+        while True:
+            while idx < len(self._events):
+                event = self._events[idx]
+                idx += 1
+                yield event
+
+            if self._done:
+                return
+
+            if self._loop is None:
+                self._loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(self._loop)
+                from kiva.run import run
+
+                self._agen = run(
+                    prompt=self._prompt,
+                    agents=self._agents,
+                    base_url=self._base_url,
+                    api_key=self._api_key,
+                    model_name=self._model_name,
+                    max_iterations=self._max_iterations,
+                    worker_recursion_limit=self._worker_recursion_limit,
+                    custom_verifiers=self._custom_verifiers,
+                )
+
+            try:
+                event = self._loop.run_until_complete(self._agen.__anext__())
+            except StopAsyncIteration:
+                self._done = True
+                self._shutdown()
+                return
+
+            self._events.append(event)
+            if getattr(event, "type", None) == "final_result":
+                data = getattr(event, "data", {}) or {}
+                self._final_result = data.get("result")
+            yield event
+
+    def result(self) -> str | None:
+        for _ in self:
+            pass
+        return self._final_result
+
+    def _shutdown(self) -> None:
+        if self._agen is not None:
+            try:
+                self._loop.run_until_complete(self._agen.aclose())
+            except Exception:
+                pass
+        if self._loop is not None:
+            try:
+                self._loop.close()
+            except Exception:
+                pass
+        self._loop = None
+        self._agen = None
+
+    def __str__(self) -> str:
+        if self._done:
+            return self._final_result or ""
+        if self._final_result is not None:
+            return self._final_result
+        return ""

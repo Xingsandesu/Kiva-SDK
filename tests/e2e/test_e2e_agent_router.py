@@ -27,7 +27,9 @@ class TestAgentRouterE2E:
         )
         kiva.include_router(router)
 
-        result = kiva.run("What's the forecast for Beijing?", console=False)
+        result = kiva.run(
+            "What's the forecast for Beijing?", console=False
+        ).result()
         
         assert result is not None
         print(f"\nBasic Router Result: {result}")
@@ -56,7 +58,7 @@ class TestAgentRouterE2E:
         result = kiva.run(
             "Weather in Tokyo and calculate 30 + 20",
             console=False
-        )
+        ).result()
         
         assert result is not None
         print(f"\nMultiple Agents Router Result: {result}")
@@ -89,7 +91,7 @@ class TestAgentRouterE2E:
         assert "weather_forecast" in agent_names
         assert "math_add" in agent_names
 
-        result = kiva.run("Forecast for London", console=False)
+        result = kiva.run("Forecast for London", console=False).result()
         assert result is not None
         print(f"\nMultiple Routers Result: {result}")
 
@@ -117,7 +119,7 @@ class TestAgentRouterE2E:
         agent_names = [a.name for a in kiva._agents]
         assert "api_v1_search" in agent_names
 
-        result = kiva.run("Search for Python", console=False)
+        result = kiva.run("Search for Python", console=False).result()
         assert result is not None
         print(f"\nNested Routers Result: {result}")
 
@@ -142,7 +144,7 @@ class TestAgentRouterE2E:
         )
         kiva.include_router(router)
 
-        result = kiva.run("Calculate 7 * 8", console=False)
+        result = kiva.run("Calculate 7 * 8", console=False).result()
         assert result is not None
         print(f"\nClass Agent Router Result: {result}")
 
@@ -166,7 +168,7 @@ class TestAgentRouterE2E:
         agent_names = [a.name for a in kiva._agents]
         assert "v2_weather_current" in agent_names
 
-        result = kiva.run("Current weather in Paris", console=False)
+        result = kiva.run("Current weather in Paris", console=False).result()
         assert result is not None
         print(f"\nPrefix Override Result: {result}")
 
@@ -199,7 +201,7 @@ class TestAgentRouterE2E:
         assert "direct_weather" in agent_names
         assert "routed_calc" in agent_names
 
-        result = kiva.run("Weather in Tokyo", console=False)
+        result = kiva.run("Weather in Tokyo", console=False).result()
         assert result is not None
         print(f"\nMixed Registration Result: {result}")
 

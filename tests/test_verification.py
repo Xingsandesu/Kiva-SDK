@@ -14,7 +14,6 @@ from hypothesis import strategies as st
 
 from kiva.verification import (
     AgentMessage,
-    FinalResultVerifier,
     LLMVerificationResult,
     RetryContext,
     VerificationResult,
@@ -712,328 +711,6 @@ class TestVerifierProtocol:
         assert results[0].validator_name == "length_check"
 
 
-class TestFinalResultVerifier:
-    """Unit tests for FinalResultVerifier class."""
-
-    def test_create_verifier_with_defaults(self):
-        """Test creating a FinalResultVerifier with default settings."""
-        verifier = FinalResultVerifier()
-        assert verifier.model_name == "gpt-4o"
-        assert verifier.api_key is None
-        assert verifier.base_url is None
-        assert verifier.custom_verifiers == []
-
-    def test_create_verifier_with_custom_settings(self):
-        """Test creating a FinalResultVerifier with custom settings."""
-        verifier = FinalResultVerifier(
-            model_name="gpt-3.5-turbo",
-            api_key="test-key",
-            base_url="https://api.example.com",
-        )
-        assert verifier.model_name == "gpt-3.5-turbo"
-        assert verifier.api_key == "test-key"
-        assert verifier.base_url == "https://api.example.com"
-
-    def test_aggregate_results_all_passed(self):
-        """Test aggregation when all results pass."""
-        verifier = FinalResultVerifier()
-        results = [
-            VerificationResult(status=VerificationStatus.PASSED, confidence=0.9),
-            VerificationResult(status=VerificationStatus.PASSED, confidence=0.8),
-        ]
-        aggregated = verifier._aggregate_results(results)
-        assert aggregated.status == VerificationStatus.PASSED
-        assert abs(aggregated.confidence - 0.85) < 0.0001
-        assert aggregated.validator_name == "final_aggregate"
-
-    def test_aggregate_results_one_failed(self):
-        """Test aggregation when one result fails."""
-        verifier = FinalResultVerifier()
-        results = [
-            VerificationResult(status=VerificationStatus.PASSED, confidence=0.9),
-            VerificationResult(
-                status=VerificationStatus.FAILED,
-                rejection_reason="Incomplete answer",
-                improvement_suggestions=["Add more details"],
-                confidence=0.5,
-            ),
-        ]
-        aggregated = verifier._aggregate_results(results)
-        assert aggregated.status == VerificationStatus.FAILED
-        assert "Incomplete answer" in aggregated.rejection_reason
-        assert "Add more details" in aggregated.improvement_suggestions
-        assert aggregated.validator_name == "final_aggregate"
-
-    def test_aggregate_results_empty(self):
-        """Test aggregation with empty results list."""
-        verifier = FinalResultVerifier()
-        aggregated = verifier._aggregate_results([])
-        assert aggregated.status == VerificationStatus.PASSED
-        assert aggregated.validator_name == "final_aggregate"
-
-    def test_custom_verifier_execution(self):
-        """Test that custom verifiers are executed with original prompt."""
-
-        class CustomVerifier:
-            def verify(
-                self, task: str, output: str, context: dict | None = None
-            ) -> VerificationResult:
-                # Check if the output mentions the key topic from the prompt
-                if "capital" in task.lower() and "paris" not in output.lower():
-                    return VerificationResult(
-                        status=VerificationStatus.FAILED,
-                        rejection_reason="Missing capital city in response",
-                        validator_name="custom",
-                    )
-                return VerificationResult(
-                    status=VerificationStatus.PASSED,
-                    validator_name="custom",
-                )
-
-        verifier = FinalResultVerifier(custom_verifiers=[CustomVerifier()])
-        results = verifier._run_custom_verifiers(
-            original_prompt="What is the capital of France?",
-            final_result="France is a country in Europe.",
-        )
-        assert len(results) == 1
-        assert results[0].status == VerificationStatus.FAILED
-        assert results[0].rejection_reason == "Missing capital city in response"
-
-    def test_custom_verifier_passes(self):
-        """Test custom verifier that passes."""
-
-        class CustomVerifier:
-            def verify(
-                self, task: str, output: str, context: dict | None = None
-            ) -> VerificationResult:
-                if "capital" in task.lower() and "paris" in output.lower():
-                    return VerificationResult(
-                        status=VerificationStatus.PASSED,
-                        validator_name="custom",
-                    )
-                return VerificationResult(
-                    status=VerificationStatus.FAILED,
-                    rejection_reason="Missing expected content",
-                    validator_name="custom",
-                )
-
-        verifier = FinalResultVerifier(custom_verifiers=[CustomVerifier()])
-        results = verifier._run_custom_verifiers(
-            original_prompt="What is the capital of France?",
-            final_result="The capital of France is Paris.",
-        )
-        assert len(results) == 1
-        assert results[0].status == VerificationStatus.PASSED
-
-    def test_custom_verifier_exception_handling(self):
-        """Test that custom verifier exceptions are handled gracefully."""
-
-        class FailingVerifier:
-            _verifier_name = "failing_verifier"
-
-            def verify(
-                self, task: str, output: str, context: dict | None = None
-            ) -> VerificationResult:
-                raise ValueError("Verifier crashed!")
-
-        verifier = FinalResultVerifier(custom_verifiers=[FailingVerifier()])
-        results = verifier._run_custom_verifiers(
-            original_prompt="Test prompt",
-            final_result="Test result",
-        )
-        assert len(results) == 1
-        assert results[0].status == VerificationStatus.SKIPPED
-        assert "Custom verifier error" in results[0].rejection_reason
-        assert results[0].validator_name == "failing_verifier"
-
-
-class TestFinalResultVerificationProperty:
-    """Property-based tests for Final Result Verification.
-
-    Feature: output-verification-agent, Property 2: Final Result Verification
-    Against Original Prompt
-    """
-
-    @given(
-        original_prompt=st.text(min_size=1, max_size=200).filter(lambda x: x.strip()),
-        final_result=st.text(min_size=1, max_size=500).filter(lambda x: x.strip()),
-    )
-    @settings(max_examples=100)
-    def test_final_verification_uses_original_prompt_not_task_assignment(
-        self,
-        original_prompt: str,
-        final_result: str,
-    ):
-        """Final Result Verification Against Original Prompt.
-
-        For any synthesize_results execution that completes, the
-        FinalResultVerifier SHALL verify the final result against the user's
-        original prompt (state.prompt), ensuring the complete user requirement
-        is satisfied.
-
-        Feature: output-verification-agent
-        """
-        # Create a custom verifier that captures what prompt was passed
-        captured_prompts = []
-
-        class PromptCapturingVerifier:
-            def verify(
-                self, task: str, output: str, context: dict | None = None
-            ) -> VerificationResult:
-                captured_prompts.append(task)
-                return VerificationResult(status=VerificationStatus.PASSED)
-
-        verifier = FinalResultVerifier(
-            custom_verifiers=[PromptCapturingVerifier()]
-        )
-
-        # Run custom verifiers (synchronous part we can test)
-        verifier._run_custom_verifiers(
-            original_prompt=original_prompt,
-            final_result=final_result,
-        )
-
-        # Verify the original_prompt was passed to the verifier
-        assert len(captured_prompts) == 1
-        assert captured_prompts[0] == original_prompt
-
-    @given(
-        original_prompt=st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
-        final_result=st.text(min_size=1, max_size=200).filter(lambda x: x.strip()),
-        worker_results=st.lists(
-            st.fixed_dictionaries({
-                "agent_id": st.text(min_size=1, max_size=20).filter(lambda x: x.strip()),
-                "result": st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
-            }),
-            min_size=0,
-            max_size=3,
-        ),
-    )
-    @settings(max_examples=100)
-    def test_final_verification_result_always_has_required_fields(
-        self,
-        original_prompt: str,
-        final_result: str,
-        worker_results: list[dict],
-    ):
-        """Final verification always produces properly structured results.
-
-        For any final verification operation, the result SHALL contain all
-        required fields: status, rejection_reason, improvement_suggestions,
-        field_errors.
-
-        Feature: output-verification-agent
-        """
-        verifier = FinalResultVerifier()
-
-        # Test with custom verifier that always passes
-        class AlwaysPassVerifier:
-            def verify(
-                self, task: str, output: str, context: dict | None = None
-            ) -> VerificationResult:
-                return VerificationResult(status=VerificationStatus.PASSED)
-
-        verifier_with_custom = FinalResultVerifier(
-            custom_verifiers=[AlwaysPassVerifier()]
-        )
-        results = verifier_with_custom._run_custom_verifiers(
-            original_prompt, final_result
-        )
-
-        for result in results:
-            # Verify all required fields exist
-            assert hasattr(result, "status")
-            assert hasattr(result, "rejection_reason")
-            assert hasattr(result, "improvement_suggestions")
-            assert hasattr(result, "field_errors")
-            assert isinstance(result.status, VerificationStatus)
-            assert isinstance(result.improvement_suggestions, list)
-            assert isinstance(result.field_errors, dict)
-
-    @given(
-        original_prompt=st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
-        final_result=st.text(min_size=1, max_size=200).filter(lambda x: x.strip()),
-    )
-    @settings(max_examples=100)
-    def test_final_verification_aggregation_preserves_failure_info(
-        self,
-        original_prompt: str,
-        final_result: str,
-    ):
-        """Aggregation preserves failure information from custom verifiers.
-
-        For any final verification with failing custom verifiers, the
-        aggregated result SHALL contain the rejection reasons and improvement
-        suggestions from all failed verifiers.
-
-        Feature: output-verification-agent
-        """
-        rejection_reason = f"Failed for prompt: {original_prompt[:20]}"
-        suggestion = "Try a different approach"
-
-        class FailingVerifier:
-            def verify(
-                self, task: str, output: str, context: dict | None = None
-            ) -> VerificationResult:
-                return VerificationResult(
-                    status=VerificationStatus.FAILED,
-                    rejection_reason=rejection_reason,
-                    improvement_suggestions=[suggestion],
-                    validator_name="test_verifier",
-                )
-
-        verifier = FinalResultVerifier(custom_verifiers=[FailingVerifier()])
-        results = verifier._run_custom_verifiers(original_prompt, final_result)
-        aggregated = verifier._aggregate_results(results)
-
-        assert aggregated.status == VerificationStatus.FAILED
-        assert rejection_reason in aggregated.rejection_reason
-        assert suggestion in aggregated.improvement_suggestions
-
-    @given(
-        original_prompt=st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
-        final_result=st.text(min_size=1, max_size=200).filter(lambda x: x.strip()),
-        num_verifiers=st.integers(min_value=1, max_value=5),
-    )
-    @settings(max_examples=100)
-    def test_all_custom_verifiers_are_executed(
-        self,
-        original_prompt: str,
-        final_result: str,
-        num_verifiers: int,
-    ):
-        """All registered custom verifiers are executed.
-
-        For any FinalResultVerifier with N custom verifiers, all N verifiers
-        SHALL be executed and their results included in the aggregation.
-
-        Feature: output-verification-agent
-        """
-        execution_count = []
-
-        class CountingVerifier:
-            def __init__(self, verifier_id: int):
-                self.verifier_id = verifier_id
-
-            def verify(
-                self, task: str, output: str, context: dict | None = None
-            ) -> VerificationResult:
-                execution_count.append(self.verifier_id)
-                return VerificationResult(status=VerificationStatus.PASSED)
-
-        verifiers = [CountingVerifier(i) for i in range(num_verifiers)]
-        verifier = FinalResultVerifier(custom_verifiers=verifiers)
-
-        results = verifier._run_custom_verifiers(original_prompt, final_result)
-
-        # All verifiers should have been executed
-        assert len(results) == num_verifiers
-        assert len(execution_count) == num_verifiers
-        # Each verifier should have been called exactly once
-        assert sorted(execution_count) == list(range(num_verifiers))
-
-
-
 class TestWorkerRetryContextProperty:
     """Property-based tests for Worker Retry Context completeness.
 
@@ -1328,255 +1005,6 @@ class TestWorkerRetryContextProperty:
         can_retry = context.iteration < context.max_iterations
         assert can_retry == (iteration < max_iterations)
 
-
-
-class TestWorkflowRestartProperty:
-    """Property-based tests for Workflow Restart On Final Verification Failure.
-
-    Feature: output-verification-agent
-    """
-
-    @given(
-        original_prompt=st.text(min_size=1, max_size=200).filter(lambda x: x.strip()),
-        rejection_reason=st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
-        num_previous_attempts=st.integers(min_value=0, max_value=3),
-    )
-    @settings(max_examples=100)
-    def test_workflow_retry_instruction_contains_original_prompt(
-        self,
-        original_prompt: str,
-        rejection_reason: str,
-        num_previous_attempts: int,
-    ):
-        """Workflow retry instruction contains original prompt.
-
-        For any final result verification failure, the retry instruction SHALL
-        contain the user's original prompt to guide the retry.
-
-        Feature: output-verification-agent
-        """
-        from kiva.nodes.verify import _build_workflow_retry_instruction
-
-        # Build previous attempts
-        previous_attempts = [
-            {
-                "iteration": i,
-                "final_result": f"Result {i}",
-                "rejection_reason": f"Reason {i}",
-                "agent_results": [],
-            }
-            for i in range(num_previous_attempts)
-        ]
-
-        instruction = _build_workflow_retry_instruction(
-            original_prompt=original_prompt,
-            rejection_reason=rejection_reason,
-            previous_attempts=previous_attempts,
-        )
-
-        # Verify original prompt is in the instruction
-        assert original_prompt in instruction
-        # Verify it's marked as a retry
-        assert "RETRY" in instruction
-        # Verify it instructs to try different approach
-        assert "DIFFERENT" in instruction or "different" in instruction.lower()
-
-    @given(
-        original_prompt=st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
-        rejection_reasons=st.lists(
-            st.text(min_size=1, max_size=50).filter(lambda x: x.strip()),
-            min_size=1,
-            max_size=3,
-        ),
-    )
-    @settings(max_examples=100)
-    def test_workflow_retry_instruction_contains_all_previous_rejections(
-        self,
-        original_prompt: str,
-        rejection_reasons: list[str],
-    ):
-        """Workflow retry instruction contains all previous rejection reasons.
-
-        For any workflow restart, the retry instruction SHALL contain all
-        previous rejection reasons to prevent repeating the same mistakes.
-
-        Feature: output-verification-agent
-        """
-        from kiva.nodes.verify import _build_workflow_retry_instruction
-
-        # Build previous attempts with rejection reasons
-        previous_attempts = [
-            {
-                "iteration": i,
-                "final_result": f"Result {i}",
-                "rejection_reason": reason,
-                "agent_results": [],
-            }
-            for i, reason in enumerate(rejection_reasons)
-        ]
-
-        instruction = _build_workflow_retry_instruction(
-            original_prompt=original_prompt,
-            rejection_reason=rejection_reasons[-1] if rejection_reasons else None,
-            previous_attempts=previous_attempts,
-        )
-
-        # Verify all rejection reasons are included
-        for reason in rejection_reasons:
-            assert reason in instruction
-
-    @given(
-        original_prompt=st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
-        rejection_reason=st.text(min_size=1, max_size=50).filter(lambda x: x.strip()),
-        improvement_suggestions=st.lists(
-            st.text(min_size=1, max_size=50).filter(lambda x: x.strip()),
-            min_size=0,
-            max_size=3,
-        ),
-        attempts=st.integers(min_value=1, max_value=5),
-    )
-    @settings(max_examples=100)
-    def test_failure_summary_contains_original_prompt_and_reason(
-        self,
-        original_prompt: str,
-        rejection_reason: str,
-        improvement_suggestions: list[str],
-        attempts: int,
-    ):
-        """Failure summary contains original prompt and rejection reason.
-
-        When max iterations are reached, the failure summary SHALL contain
-        the user's original prompt and the rejection reason.
-
-        Feature: output-verification-agent
-        """
-        from kiva.nodes.verify import _generate_failure_summary
-
-        summary = _generate_failure_summary(
-            original_prompt=original_prompt,
-            rejection_reason=rejection_reason,
-            improvement_suggestions=improvement_suggestions,
-            attempts=attempts,
-        )
-
-        # Verify original prompt is in the summary
-        assert original_prompt in summary
-        # Verify rejection reason is in the summary
-        assert rejection_reason in summary
-        # Verify attempt count is in the summary
-        assert str(attempts) in summary
-        # Verify all improvement suggestions are included
-        for suggestion in improvement_suggestions:
-            assert suggestion in summary
-
-    @given(
-        workflow_iteration=st.integers(min_value=0, max_value=5),
-        max_workflow_iterations=st.integers(min_value=1, max_value=5),
-    )
-    @settings(max_examples=100)
-    def test_workflow_iteration_tracking(
-        self,
-        workflow_iteration: int,
-        max_workflow_iterations: int,
-    ):
-        """Workflow iteration is correctly tracked.
-
-        The workflow iteration SHALL be correctly tracked to determine
-        whether more retries are allowed.
-
-        Feature: output-verification-agent
-        """
-        # Determine if restart should be allowed
-        should_restart = workflow_iteration < max_workflow_iterations
-
-        # This is the logic used in verify_final_result
-        if workflow_iteration >= max_workflow_iterations:
-            # Max reached, should not restart
-            assert not should_restart
-        else:
-            # Can still restart
-            assert should_restart
-
-    @given(
-        original_prompt=st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
-        final_result=st.text(min_size=1, max_size=200).filter(lambda x: x.strip()),
-        num_agent_results=st.integers(min_value=0, max_value=3),
-    )
-    @settings(max_examples=100)
-    def test_previous_attempts_history_is_preserved(
-        self,
-        original_prompt: str,
-        final_result: str,
-        num_agent_results: int,
-    ):
-        """Previous workflow attempts are preserved in history.
-
-        When a workflow restarts, the previous attempt SHALL be added to
-        the previous_workflow_attempts history.
-
-        Feature: output-verification-agent
-        """
-        # Simulate building previous attempts history
-        previous_attempts: list[dict] = []
-        agent_results = [
-            {"agent_id": f"agent_{i}", "result": f"Result {i}"}
-            for i in range(num_agent_results)
-        ]
-
-        # Add a new attempt (simulating what verify_final_result does)
-        new_attempt = {
-            "iteration": len(previous_attempts),
-            "final_result": final_result,
-            "rejection_reason": "Test rejection",
-            "agent_results": agent_results,
-        }
-        previous_attempts = list(previous_attempts)  # Make a copy
-        previous_attempts.append(new_attempt)
-
-        # Verify the attempt was added
-        assert len(previous_attempts) == 1
-        assert previous_attempts[0]["final_result"] == final_result
-        assert previous_attempts[0]["rejection_reason"] == "Test rejection"
-        assert len(previous_attempts[0]["agent_results"]) == num_agent_results
-
-    @given(
-        original_prompt=st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
-        rejection_reason=st.one_of(
-            st.none(),
-            st.text(min_size=1, max_size=50).filter(lambda x: x.strip()),
-        ),
-    )
-    @settings(max_examples=100)
-    def test_failure_summary_handles_none_rejection_reason(
-        self,
-        original_prompt: str,
-        rejection_reason: str | None,
-    ):
-        """Failure summary handles None rejection reason gracefully.
-
-        The failure summary SHALL handle None rejection reason by using
-        a default message.
-
-        Feature: output-verification-agent
-        """
-        from kiva.nodes.verify import _generate_failure_summary
-
-        summary = _generate_failure_summary(
-            original_prompt=original_prompt,
-            rejection_reason=rejection_reason,
-            improvement_suggestions=[],
-            attempts=1,
-        )
-
-        # Verify original prompt is always present
-        assert original_prompt in summary
-
-        # Verify rejection reason handling
-        if rejection_reason is not None:
-            assert rejection_reason in summary
-        else:
-            # Should have a default message
-            assert "Unknown reason" in summary
 
 
 class TestRetryPromptProperty:
@@ -2811,39 +2239,6 @@ class TestVerificationEventsProperty:
         # 5 event types: start, passed, failed, max_reached, error (graceful degradation)
         assert len(WORKER_VERIFICATION_EVENT_TYPES) == 5
 
-    def test_final_verification_event_types_defined(self):
-        """Final verification event types are properly defined.
-
-        The SDK SHALL define distinct event types for final verification:
-        - final_verification_start
-        - final_verification_passed
-        - final_verification_failed
-        - final_verification_max_reached
-
-        Feature: output-verification-agent
-        """
-        from kiva.events import (
-            FINAL_VERIFICATION_EVENT_TYPES,
-            FINAL_VERIFICATION_START,
-            FINAL_VERIFICATION_PASSED,
-            FINAL_VERIFICATION_FAILED,
-            FINAL_VERIFICATION_MAX_REACHED,
-        )
-
-        # Verify all final verification event types are defined
-        assert FINAL_VERIFICATION_START == "final_verification_start"
-        assert FINAL_VERIFICATION_PASSED == "final_verification_passed"
-        assert FINAL_VERIFICATION_FAILED == "final_verification_failed"
-        assert FINAL_VERIFICATION_MAX_REACHED == "final_verification_max_reached"
-
-        # Verify they are in the list
-        assert FINAL_VERIFICATION_START in FINAL_VERIFICATION_EVENT_TYPES
-        assert FINAL_VERIFICATION_PASSED in FINAL_VERIFICATION_EVENT_TYPES
-        assert FINAL_VERIFICATION_FAILED in FINAL_VERIFICATION_EVENT_TYPES
-        assert FINAL_VERIFICATION_MAX_REACHED in FINAL_VERIFICATION_EVENT_TYPES
-        # 5 event types: start, passed, failed, max_reached, error (graceful degradation)
-        assert len(FINAL_VERIFICATION_EVENT_TYPES) == 5
-
     def test_retry_event_types_defined(self):
         """Retry event types are properly defined.
 
@@ -2882,22 +2277,21 @@ class TestVerificationEventsProperty:
         from kiva.events import (
             VERIFICATION_EVENT_TYPES,
             WORKER_VERIFICATION_EVENT_TYPES,
-            FINAL_VERIFICATION_EVENT_TYPES,
             RETRY_EVENT_TYPES,
+            VERIFICATION_STATE_CHANGED,
         )
 
         # Verify combined list contains all event types
         expected_count = (
             len(WORKER_VERIFICATION_EVENT_TYPES)
-            + len(FINAL_VERIFICATION_EVENT_TYPES)
             + len(RETRY_EVENT_TYPES)
+            + 1
         )
         assert len(VERIFICATION_EVENT_TYPES) == expected_count
+        assert VERIFICATION_STATE_CHANGED in VERIFICATION_EVENT_TYPES
 
         # Verify all individual events are in combined list
         for event_type in WORKER_VERIFICATION_EVENT_TYPES:
-            assert event_type in VERIFICATION_EVENT_TYPES
-        for event_type in FINAL_VERIFICATION_EVENT_TYPES:
             assert event_type in VERIFICATION_EVENT_TYPES
         for event_type in RETRY_EVENT_TYPES:
             assert event_type in VERIFICATION_EVENT_TYPES
@@ -2908,13 +2302,10 @@ class TestVerificationEventsProperty:
             "worker_verification_passed",
             "worker_verification_failed",
             "worker_verification_max_reached",
-            "final_verification_start",
-            "final_verification_passed",
-            "final_verification_failed",
-            "final_verification_max_reached",
             "retry_triggered",
             "retry_completed",
             "retry_skipped",
+            "verification_state_changed",
         ])
     )
     @settings(max_examples=100)
@@ -2988,11 +2379,10 @@ class TestVerificationEventsProperty:
 
     @given(
         event_type=st.sampled_from([
-            "final_verification_start",
-            "final_verification_passed",
             "retry_triggered",
             "token",
             "agent_start",
+            "final_result",
         ])
     )
     @settings(max_examples=100)
@@ -3010,55 +2400,6 @@ class TestVerificationEventsProperty:
         from kiva.events import is_worker_verification_event
 
         assert is_worker_verification_event(event_type) is False
-
-    @given(
-        event_type=st.sampled_from([
-            "final_verification_start",
-            "final_verification_passed",
-            "final_verification_failed",
-            "final_verification_max_reached",
-        ])
-    )
-    @settings(max_examples=100)
-    def test_is_final_verification_event_returns_true_for_final_events(
-        self,
-        event_type: str,
-    ):
-        """is_final_verification_event returns True for final verification events.
-
-        For any final verification event type, is_final_verification_event()
-        SHALL return True.
-
-        Feature: output-verification-agent
-        """
-        from kiva.events import is_final_verification_event
-
-        assert is_final_verification_event(event_type) is True
-
-    @given(
-        event_type=st.sampled_from([
-            "worker_verification_start",
-            "worker_verification_passed",
-            "retry_triggered",
-            "token",
-            "agent_start",
-        ])
-    )
-    @settings(max_examples=100)
-    def test_is_final_verification_event_returns_false_for_non_final_events(
-        self,
-        event_type: str,
-    ):
-        """is_final_verification_event returns False for non-final events.
-
-        For any non-final verification event type, is_final_verification_event()
-        SHALL return False.
-
-        Feature: output-verification-agent
-        """
-        from kiva.events import is_final_verification_event
-
-        assert is_final_verification_event(event_type) is False
 
     @given(
         event_type=st.sampled_from([
@@ -3085,7 +2426,7 @@ class TestVerificationEventsProperty:
     @given(
         event_type=st.sampled_from([
             "worker_verification_start",
-            "final_verification_passed",
+            "worker_verification_passed",
             "token",
             "agent_start",
         ])
@@ -3188,44 +2529,6 @@ class TestVerificationEventsProperty:
 
     @given(
         iteration=st.integers(min_value=0, max_value=100),
-        reason=st.one_of(st.none(), st.text(max_size=200)),
-        timestamp=st.floats(min_value=0.0, max_value=1e12, allow_nan=False),
-    )
-    @settings(max_examples=100)
-    def test_stream_event_can_represent_final_verification_failed(
-        self,
-        iteration: int,
-        reason: str | None,
-        timestamp: float,
-    ):
-        """StreamEvent can represent final_verification_failed events.
-
-        For any final verification failed event, the StreamEvent SHALL contain
-        iteration, reason, and action data.
-
-        Feature: output-verification-agent
-        """
-        from kiva.events import StreamEvent
-
-        event = StreamEvent(
-            type="final_verification_failed",
-            data={
-                "iteration": iteration,
-                "reason": reason,
-                "action": "restart_workflow",
-                "execution_id": "test-exec-id",
-            },
-            timestamp=timestamp,
-        )
-
-        assert event.type == "final_verification_failed"
-        assert event.data["iteration"] == iteration
-        assert event.data["reason"] == reason
-        assert event.data["action"] == "restart_workflow"
-        assert event.timestamp == timestamp
-
-    @given(
-        iteration=st.integers(min_value=0, max_value=100),
         retry_prompt=st.text(min_size=1, max_size=500).filter(lambda x: x.strip()),
         timestamp=st.floats(min_value=0.0, max_value=1e12, allow_nan=False),
     )
@@ -3314,20 +2617,6 @@ class TestVerificationEventsProperty:
 
         # The actual event emission is tested via integration tests
         # Here we verify the node is properly defined
-
-    def test_verification_events_emitted_by_verify_final_result_node(self):
-        """verify_final_result node emits appropriate verification events.
-
-        The verify_final_result node SHALL emit:
-        - final_verification_start when verification begins
-        - final_verification_passed/failed/max_reached based on result
-
-        Feature: output-verification-agent
-        """
-        from kiva.nodes.verify import verify_final_result
-
-        # Verify the function exists and is callable
-        assert callable(verify_final_result)
 
     def test_retry_events_emitted_by_worker_retry_node(self):
         """worker_retry node emits appropriate retry events.
@@ -3895,69 +3184,6 @@ class TestGracefulDegradationProperty:
     """
 
     @given(
-        original_prompt=st.text(min_size=1, max_size=200).filter(lambda x: x.strip()),
-        final_result=st.text(min_size=1, max_size=500).filter(lambda x: x.strip()),
-        rejection_reason=st.text(min_size=1, max_size=200).filter(lambda x: x.strip()),
-        improvement_suggestions=st.lists(
-            st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
-            min_size=0,
-            max_size=3,
-        ),
-        attempts=st.integers(min_value=1, max_value=10),
-    )
-    @settings(max_examples=100)
-    def test_failure_summary_contains_required_info(
-        self,
-        original_prompt: str,
-        final_result: str,
-        rejection_reason: str,
-        improvement_suggestions: list[str],
-        attempts: int,
-    ):
-        """Property 10: Failure summary contains required information.
-
-        For any workflow-level failure after max iterations, the failure summary
-        SHALL contain the original user prompt, rejection reason, and improvement
-        suggestions.
-
-        Feature: output-verification-agent, Property 10: Graceful Degradation On Failure
-        Validates: Requirements 8.1, 8.2, 8.3
-        """
-        from kiva.nodes.verify import _generate_failure_summary
-
-        summary = _generate_failure_summary(
-            original_prompt=original_prompt,
-            rejection_reason=rejection_reason,
-            improvement_suggestions=improvement_suggestions,
-            attempts=attempts,
-        )
-
-        # Verify the summary contains the original prompt
-        assert original_prompt in summary, (
-            f"Failure summary must contain original prompt. "
-            f"Prompt: {original_prompt!r}, Summary: {summary!r}"
-        )
-
-        # Verify the summary contains the rejection reason
-        assert rejection_reason in summary, (
-            f"Failure summary must contain rejection reason. "
-            f"Reason: {rejection_reason!r}, Summary: {summary!r}"
-        )
-
-        # Verify the summary contains the attempt count
-        assert str(attempts) in summary, (
-            f"Failure summary must contain attempt count. "
-            f"Attempts: {attempts}, Summary: {summary!r}"
-        )
-
-        # Verify improvement suggestions are included if provided
-        for suggestion in improvement_suggestions:
-            assert suggestion in summary, (
-                f"Failure summary must contain improvement suggestion. "
-                f"Suggestion: {suggestion!r}, Summary: {summary!r}"
-            )
-
-    @given(
         agent_results=st.lists(
             st.fixed_dictionaries({
                 "agent_id": st.text(min_size=1, max_size=20).filter(lambda x: x.strip()),
@@ -4112,84 +3338,6 @@ class TestGracefulDegradationProperty:
         assert "Verifier crashed" in results[0].rejection_reason
 
     @given(
-        original_prompt=st.text(min_size=1, max_size=200).filter(lambda x: x.strip()),
-        final_result=st.text(min_size=1, max_size=500).filter(lambda x: x.strip()),
-    )
-    @settings(max_examples=100)
-    def test_final_verifier_exception_produces_skipped_result(
-        self,
-        original_prompt: str,
-        final_result: str,
-    ):
-        """Final verifier exception produces SKIPPED result.
-
-        For any final result verifier custom verifier that raises an exception,
-        the SDK SHALL produce a SKIPPED result instead of propagating the exception.
-
-        Feature: output-verification-agent
-        """
-
-        class FailingVerifier:
-            _verifier_name = "failing_final_verifier"
-
-            def verify(
-                self, task: str, output: str, context: dict | None = None
-            ) -> VerificationResult:
-                raise ValueError("Final verifier crashed!")
-
-        verifier = FinalResultVerifier(custom_verifiers=[FailingVerifier()])
-        results = verifier._run_custom_verifiers(
-            original_prompt=original_prompt,
-            final_result=final_result,
-        )
-
-        # Should have one result
-        assert len(results) == 1
-
-        # Result should be SKIPPED, not an exception
-        assert results[0].status == VerificationStatus.SKIPPED
-
-        # Error message should be preserved
-        assert "Custom verifier error" in results[0].rejection_reason
-        assert "Final verifier crashed" in results[0].rejection_reason
-
-    @given(
-        workflow_iteration=st.integers(min_value=0, max_value=10),
-        max_workflow_iterations=st.integers(min_value=1, max_value=5),
-        original_prompt=st.text(min_size=1, max_size=200).filter(lambda x: x.strip()),
-    )
-    @settings(max_examples=100)
-    def test_workflow_max_iterations_returns_failure_summary(
-        self,
-        workflow_iteration: int,
-        max_workflow_iterations: int,
-        original_prompt: str,
-    ):
-        """Workflow max iterations returns failure summary.
-
-        For any workflow that reaches max iterations, the SDK SHALL return
-        a failure summary containing the original user prompt.
-
-        Feature: output-verification-agent
-        """
-        from kiva.nodes.verify import _generate_failure_summary
-
-        if workflow_iteration >= max_workflow_iterations:
-            # At max iterations, we should generate a failure summary
-            summary = _generate_failure_summary(
-                original_prompt=original_prompt,
-                rejection_reason="Verification failed",
-                improvement_suggestions=["Try a different approach"],
-                attempts=workflow_iteration + 1,
-            )
-
-            # Summary must contain the original prompt
-            assert original_prompt in summary
-
-            # Summary must indicate it's a failure
-            assert "Could Not" in summary or "failed" in summary.lower()
-
-    @given(
         failed_results=st.lists(
             st.builds(
                 VerificationResult,
@@ -4243,4 +3391,3 @@ class TestGracefulDegradationProperty:
                 f"Suggestion '{suggestion}' not found in aggregated suggestions: "
                 f"{aggregated.improvement_suggestions}"
             )
-

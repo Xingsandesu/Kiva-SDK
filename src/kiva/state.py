@@ -113,17 +113,8 @@ class OrchestratorState(TypedDict):
         custom_verifiers: List of custom verifier functions registered via decorator.
         verification_warning: Warning message when verification is bypassed or
             max iterations reached.
-        workflow_iteration: Current iteration number for the entire workflow
-            (used when final result verification fails and workflow restarts).
-        max_workflow_iterations: Maximum allowed complete workflow restarts
-            before returning failure summary.
-        previous_workflow_attempts: History of previous workflow attempts,
-            containing final results and rejection reasons for each attempt.
-        retry_instruction: Instruction added to prompt context when workflow
-            restarts, guiding the system to try a different approach.
-        final_verification_result: Result from final result verification,
-            containing status and details about whether the synthesized result
-            meets the user's original requirements.
+        verification_state: Latest verification lifecycle state snapshot.
+        verification_timeline: Accumulated verification lifecycle timeline entries.
     """
 
     messages: Annotated[list, operator.add]
@@ -154,9 +145,5 @@ class OrchestratorState(TypedDict):
     output_schema: type | None
     custom_verifiers: list
     verification_warning: str | None
-    # Workflow-level verification fields
-    workflow_iteration: int
-    max_workflow_iterations: int
-    previous_workflow_attempts: list[dict[str, Any]]
-    retry_instruction: str | None
-    final_verification_result: dict[str, Any] | None
+    verification_state: dict[str, Any] | None
+    verification_timeline: Annotated[list[dict[str, Any]], operator.add]

@@ -1,10 +1,8 @@
 """Verification graph nodes for the Kiva SDK.
 
-This module implements the verification nodes for the dual-layer verification
-architecture:
+This module implements the verification nodes for Worker output verification:
 1. verify_worker_output - Verifies Worker Agent outputs against assigned tasks
-2. verify_final_result - Verifies final results against user's original prompt
-3. worker_retry - Handles retry logic for failed Worker verifications
+2. worker_retry - Handles retry logic for failed Worker verifications
 
 The nodes use LangGraph Command for conditional routing based on verification
 results.
@@ -17,9 +15,9 @@ from langgraph.types import Command
 
 from kiva.state import OrchestratorState
 from kiva.verification import (
-    FinalResultVerifier,
     RetryContext,
     VerificationResult,
+    VerificationStateCode,
     VerificationStatus,
     WorkerOutputVerifier,
 )
@@ -28,9 +26,6 @@ from kiva.workflows.utils import (
     execute_single_agent,
     get_agent_by_id,
 )
-
-# Sentinel for END state in LangGraph
-END = "__end__"
 
 
 async def verify_worker_output(
@@ -70,15 +65,75 @@ async def verify_worker_output(
     iteration = state.get("verification_iteration", 0)
     max_iterations = state.get("max_verification_iterations", 3)
 
-    emit_event({
-        "type": "worker_verification_start",
-        "iteration": iteration,
-        "agent_count": len(agent_results),
-        "timestamp": time.time(),
-    })
+    base_timeline = state.get("verification_timeline", []) or []
+    timeline: list[dict[str, Any]] = list(base_timeline)
+    new_timeline_entries: list[dict[str, Any]] = []
+
+    def emit_state_change(
+        code: VerificationStateCode,
+        *,
+        scope: str = "worker",
+        message: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        entry = {
+            "scope": scope,
+            "state": code.value,
+            "timestamp": time.time(),
+            "iteration": iteration,
+            "max_iterations": max_iterations,
+            "message": message,
+            "details": details or {},
+        }
+        new_timeline_entries.append(entry)
+        timeline.append(entry)
+        emit_event(
+            {
+                "type": "verification_state_changed",
+                "scope": scope,
+                "state": code.value,
+                "verification_status": {
+                    "execution_id": state.get("execution_id", ""),
+                    "scope": scope,
+                    "state": code.value,
+                    "iteration": iteration,
+                    "max_iterations": max_iterations,
+                    "timestamp": entry["timestamp"],
+                    "message": message,
+                    "details": entry["details"],
+                    "timeline": timeline,
+                },
+                "timestamp": entry["timestamp"],
+            }
+        )
+
+    emit_state_change(
+        VerificationStateCode.INITIALIZING,
+        message="worker verification initialized",
+        details={"agent_count": len(agent_results)},
+    )
+    emit_state_change(
+        VerificationStateCode.PREPROCESSING,
+        message="worker verification preprocessing",
+        details={"task_assignments": len(task_assignments)},
+    )
+
+    emit_event(
+        {
+            "type": "worker_verification_start",
+            "iteration": iteration,
+            "agent_count": len(agent_results),
+            "max_iterations": max_iterations,
+            "timestamp": time.time(),
+        }
+    )
 
     # Create Worker output verifier with graceful degradation on failure
     try:
+        emit_state_change(
+            VerificationStateCode.VERIFYING,
+            message="creating worker verifier",
+        )
         verifier = WorkerOutputVerifier(
             model_name=state.get("model_name", "gpt-4o"),
             api_key=state.get("api_key"),
@@ -87,18 +142,41 @@ async def verify_worker_output(
         )
     except Exception as e:
         # Graceful degradation: if verifier creation fails, bypass verification
-        emit_event({
-            "type": "worker_verification_error",
-            "error": f"Failed to create verifier: {e}",
-            "action": "bypass_verification",
-            "timestamp": time.time(),
-        })
+        emit_state_change(
+            VerificationStateCode.FAILURE_HANDLING,
+            message="worker verifier creation failed",
+            details={"error": str(e), "action": "bypass_verification"},
+        )
+        emit_state_change(
+            VerificationStateCode.COMMITTING,
+            message="committing worker verification (bypassed)",
+        )
+        emit_state_change(
+            VerificationStateCode.COMPLETED,
+            message="worker verification completed (bypassed)",
+        )
+        emit_event(
+            {
+                "type": "worker_verification_error",
+                "error": f"Failed to create verifier: {e}",
+                "action": "bypass_verification",
+                "timestamp": time.time(),
+            }
+        )
         return Command(
             update={
                 "verification_results": [],
                 "verification_warning": (
                     f"Verification bypassed due to verifier error: {e}"
                 ),
+                "verification_state": {
+                    "scope": "worker",
+                    "state": VerificationStateCode.COMPLETED.value,
+                    "iteration": iteration,
+                    "max_iterations": max_iterations,
+                    "warning": f"Verification bypassed due to verifier error: {e}",
+                },
+                "verification_timeline": new_timeline_entries,
             },
             goto="synthesize_results",
         )
@@ -120,6 +198,11 @@ async def verify_worker_output(
         # Verify Worker output against assigned task (NOT original prompt)
         # with graceful degradation on verification failure
         try:
+            emit_state_change(
+                VerificationStateCode.VERIFYING,
+                message="verifying worker output",
+                details={"agent_id": agent_id},
+            )
             verification = await verifier.verify(
                 assigned_task=assigned_task,
                 output=result.get("result", ""),
@@ -127,13 +210,24 @@ async def verify_worker_output(
             )
         except Exception as e:
             # Graceful degradation: if verification fails, create SKIPPED result
-            emit_event({
-                "type": "worker_verification_error",
-                "agent_id": agent_id,
-                "error": str(e),
-                "action": "skip_verification",
-                "timestamp": time.time(),
-            })
+            emit_state_change(
+                VerificationStateCode.FAILURE_HANDLING,
+                message="worker verification error",
+                details={
+                    "agent_id": agent_id,
+                    "error": str(e),
+                    "action": "skip_verification",
+                },
+            )
+            emit_event(
+                {
+                    "type": "worker_verification_error",
+                    "agent_id": agent_id,
+                    "error": str(e),
+                    "action": "skip_verification",
+                    "timestamp": time.time(),
+                }
+            )
             verification = VerificationResult(
                 status=VerificationStatus.SKIPPED,
                 rejection_reason=f"Verification failed with error: {e}",
@@ -143,12 +237,14 @@ async def verify_worker_output(
         results.append(verification)
 
         if verification.status == VerificationStatus.FAILED:
-            failed_agents.append({
-                "agent_id": agent_id,
-                "assigned_task": assigned_task,
-                "verification": verification,
-                "previous_output": result.get("result", ""),
-            })
+            failed_agents.append(
+                {
+                    "agent_id": agent_id,
+                    "assigned_task": assigned_task,
+                    "verification": verification,
+                    "previous_output": result.get("result", ""),
+                }
+            )
 
     # Check if all passed (PASSED or SKIPPED are both acceptable for graceful
     # degradation)
@@ -161,9 +257,15 @@ async def verify_worker_output(
     any_skipped = any(r.status == VerificationStatus.SKIPPED for r in results)
 
     if all_passed:
+        emit_state_change(
+            VerificationStateCode.COMMITTING,
+            message="committing worker verification (passed)",
+            details={"skipped": any_skipped},
+        )
         event_data = {
             "type": "worker_verification_passed",
             "iteration": iteration,
+            "max_iterations": max_iterations,
             "results": [r.model_dump() for r in results],
             "timestamp": time.time(),
         }
@@ -173,12 +275,26 @@ async def verify_worker_output(
 
         update_data: dict[str, Any] = {
             "verification_results": [r.model_dump() for r in results],
+            "verification_state": {
+                "scope": "worker",
+                "state": VerificationStateCode.COMPLETED.value,
+                "iteration": iteration,
+                "max_iterations": max_iterations,
+                "passed": True,
+                "skipped": any_skipped,
+            },
+            "verification_timeline": new_timeline_entries,
         }
         if any_skipped:
             update_data["verification_warning"] = (
                 "Some verifications were skipped due to errors"
             )
 
+        emit_state_change(
+            VerificationStateCode.COMPLETED,
+            message="worker verification completed (passed)",
+            details={"skipped": any_skipped},
+        )
         return Command(
             update=update_data,
             goto="synthesize_results",
@@ -186,30 +302,74 @@ async def verify_worker_output(
 
     # Check if max iterations reached
     if iteration >= max_iterations:
-        emit_event({
-            "type": "worker_verification_max_reached",
-            "iteration": iteration,
-            "failed_agents": [f["agent_id"] for f in failed_agents],
-            "timestamp": time.time(),
-        })
+        emit_state_change(
+            VerificationStateCode.FAILURE_HANDLING,
+            message="worker verification max iterations reached",
+            details={"failed_agents": [f["agent_id"] for f in failed_agents]},
+        )
+        emit_state_change(
+            VerificationStateCode.ROLLBACK,
+            message="rolling back to best-effort synthesis",
+        )
+        emit_state_change(
+            VerificationStateCode.COMMITTING,
+            message="committing worker verification (max reached)",
+        )
+        emit_state_change(
+            VerificationStateCode.COMPLETED,
+            message="worker verification completed (max reached)",
+        )
+        emit_event(
+            {
+                "type": "worker_verification_max_reached",
+                "iteration": iteration,
+                "max_iterations": max_iterations,
+                "failed_agents": [f["agent_id"] for f in failed_agents],
+                "timestamp": time.time(),
+            }
+        )
         return Command(
             update={
                 "verification_results": [r.model_dump() for r in results],
                 "verification_warning": (
                     "Max iterations reached for worker verification"
                 ),
+                "verification_state": {
+                    "scope": "worker",
+                    "state": VerificationStateCode.COMPLETED.value,
+                    "iteration": iteration,
+                    "max_iterations": max_iterations,
+                    "passed": False,
+                    "action": "best_effort_synthesis",
+                    "failed_agents": [f["agent_id"] for f in failed_agents],
+                },
+                "verification_timeline": new_timeline_entries,
             },
             goto="synthesize_results",
         )
 
     # Build retry context for failed agents
-    emit_event({
-        "type": "worker_verification_failed",
-        "iteration": iteration,
-        "failed_agents": [f["agent_id"] for f in failed_agents],
-        "timestamp": time.time(),
-    })
+    emit_state_change(
+        VerificationStateCode.FAILURE_HANDLING,
+        message="worker verification failed",
+        details={"failed_agents": [f["agent_id"] for f in failed_agents]},
+    )
+    emit_event(
+        {
+            "type": "worker_verification_failed",
+            "iteration": iteration,
+            "max_iterations": max_iterations,
+            "failed_agents": [f["agent_id"] for f in failed_agents],
+            "results": [r.model_dump() for r in results],
+            "timestamp": time.time(),
+        }
+    )
 
+    emit_state_change(
+        VerificationStateCode.RETRY_WAITING,
+        message="building retry context",
+        details={"failed_agents": [f["agent_id"] for f in failed_agents]},
+    )
     retry_context = _build_retry_context(
         iteration=iteration,
         max_iterations=max_iterations,
@@ -224,6 +384,14 @@ async def verify_worker_output(
             "verification_results": [r.model_dump() for r in results],
             "retry_context": retry_context.model_dump(),
             "verification_iteration": iteration + 1,
+            "verification_state": {
+                "scope": "worker",
+                "state": VerificationStateCode.RETRY_WAITING.value,
+                "iteration": iteration,
+                "max_iterations": max_iterations,
+                "failed_agents": [f["agent_id"] for f in failed_agents],
+            },
+            "verification_timeline": new_timeline_entries,
         },
         goto="worker_retry",
     )
@@ -278,13 +446,12 @@ def _build_retry_context(
         RetryContext with complete history for retry operation.
     """
     # Collect previous outputs from all agents
-    previous_outputs = [
-        r.get("result", "") for r in agent_results if r.get("result")
-    ]
+    previous_outputs = [r.get("result", "") for r in agent_results if r.get("result")]
 
     # Collect previous rejections from failed agents
     previous_rejections = [
-        f["verification"] for f in failed_agents
+        f["verification"]
+        for f in failed_agents
         if isinstance(f.get("verification"), VerificationResult)
     ]
 
@@ -334,314 +501,17 @@ def build_retry_prompt(retry_context: RetryContext) -> str:
             suggestions = ", ".join(rejection.improvement_suggestions)
             prompt_parts.append(f"    Suggestions: {suggestions}")
 
-    prompt_parts.extend([
-        "",
-        "IMPORTANT: Do NOT repeat similar approaches. Try something fundamentally "
-        "different.",
-        "",
-        f"Now, please complete the task: {retry_context.original_task}",
-    ])
+    prompt_parts.extend(
+        [
+            "",
+            "IMPORTANT: Do NOT repeat similar approaches. Try something fundamentally "
+            "different.",
+            "",
+            f"Now, please complete the task: {retry_context.original_task}",
+        ]
+    )
 
     return "\n".join(prompt_parts)
-
-
-async def verify_final_result(
-    state: OrchestratorState,
-) -> Command[Literal["__end__", "analyze_and_plan"]]:
-    """Final result verification node.
-
-    Verifies whether the synthesized final result adequately satisfies the
-    user's original prompt. The verification target is state.prompt (the
-    user's original input), NOT the individual task assignments.
-
-    Failure handling strategy:
-    - If verification fails and max iterations not reached: restart entire
-      workflow from analyze_and_plan
-    - If max iterations reached: return failure summary explaining the reason
-      and the user's original input
-
-    Graceful degradation:
-    - If the verifier itself fails with an exception, verification is bypassed
-      and the final result is returned with a warning flag.
-    - Error events are emitted with detailed failure information.
-
-    Args:
-        state: The current orchestrator state containing final_result and
-            original prompt.
-
-    Returns:
-        Command routing to either:
-        - END if verification passes or max iterations reached
-        - "analyze_and_plan" if verification fails and retries remain
-
-    Emits events:
-        - final_verification_start: When verification begins
-        - final_verification_passed: When final result passes verification
-        - final_verification_failed: When final result fails verification
-        - final_verification_max_reached: When max workflow iterations exceeded
-        - final_verification_error: When verifier itself fails (graceful degradation)
-    """
-    final_result = state.get("final_result", "")
-    original_prompt = state.get("prompt", "")
-    agent_results = state.get("agent_results", [])
-    workflow_iteration = state.get("workflow_iteration", 0)
-    max_workflow_iterations = state.get("max_workflow_iterations", 2)
-
-    emit_event({
-        "type": "final_verification_start",
-        "iteration": workflow_iteration,
-        "timestamp": time.time(),
-    })
-
-    # Create final result verifier with graceful degradation on failure
-    try:
-        verifier = FinalResultVerifier(
-            model_name=state.get("model_name", "gpt-4o"),
-            api_key=state.get("api_key"),
-            base_url=state.get("base_url"),
-            custom_verifiers=state.get("custom_verifiers", []),
-        )
-    except Exception as e:
-        # Graceful degradation: if verifier creation fails, bypass verification
-        emit_event({
-            "type": "final_verification_error",
-            "error": f"Failed to create verifier: {e}",
-            "action": "bypass_verification",
-            "timestamp": time.time(),
-        })
-        return Command(
-            update={
-                "final_verification_result": VerificationResult(
-                    status=VerificationStatus.SKIPPED,
-                    rejection_reason=f"Verification bypassed due to error: {e}",
-                    validator_name="graceful_degradation",
-                ).model_dump(),
-                "final_verification_warning": (
-                    f"Verification bypassed due to verifier error: {e}"
-                ),
-            },
-            goto=END,
-        )
-
-    # Verify final result against user's original prompt
-    # with graceful degradation on verification failure
-    try:
-        verification = await verifier.verify(
-            original_prompt=original_prompt,
-            final_result=final_result or "",
-            worker_results=agent_results,
-        )
-    except Exception as e:
-        # Graceful degradation: if verification fails, bypass and return result
-        emit_event({
-            "type": "final_verification_error",
-            "error": str(e),
-            "action": "bypass_verification",
-            "timestamp": time.time(),
-        })
-        return Command(
-            update={
-                "final_verification_result": VerificationResult(
-                    status=VerificationStatus.SKIPPED,
-                    rejection_reason=f"Verification failed with error: {e}",
-                    validator_name="graceful_degradation",
-                ).model_dump(),
-                "final_verification_warning": (
-                    f"Verification bypassed due to error: {e}"
-                ),
-            },
-            goto=END,
-        )
-
-    # Handle SKIPPED status (from internal graceful degradation)
-    if verification.status == VerificationStatus.SKIPPED:
-        emit_event({
-            "type": "final_verification_passed",
-            "iteration": workflow_iteration,
-            "warning": "Verification was skipped due to internal errors",
-            "timestamp": time.time(),
-        })
-        return Command(
-            update={
-                "final_verification_result": verification.model_dump(),
-                "final_verification_warning": (
-                    "Verification was skipped due to internal errors"
-                ),
-            },
-            goto=END,
-        )
-
-    if verification.status == VerificationStatus.PASSED:
-        emit_event({
-            "type": "final_verification_passed",
-            "iteration": workflow_iteration,
-            "timestamp": time.time(),
-        })
-        return Command(
-            update={"final_verification_result": verification.model_dump()},
-            goto=END,
-        )
-
-    # Check if max iterations reached
-    if workflow_iteration >= max_workflow_iterations:
-        # Generate failure summary explaining the reason and user's original input
-        failure_summary = _generate_failure_summary(
-            original_prompt=original_prompt,
-            rejection_reason=verification.rejection_reason,
-            improvement_suggestions=verification.improvement_suggestions,
-            attempts=workflow_iteration + 1,
-        )
-
-        emit_event({
-            "type": "final_verification_max_reached",
-            "iteration": workflow_iteration,
-            "reason": verification.rejection_reason,
-            "failure_summary": failure_summary,
-            "timestamp": time.time(),
-        })
-
-        return Command(
-            update={
-                "final_result": failure_summary,
-                "final_verification_result": verification.model_dump(),
-                "final_verification_warning": "Max workflow iterations reached",
-            },
-            goto=END,
-        )
-
-    # Restart entire workflow from analyze_and_plan
-    emit_event({
-        "type": "final_verification_failed",
-        "iteration": workflow_iteration,
-        "reason": verification.rejection_reason,
-        "action": "restart_workflow",
-        "timestamp": time.time(),
-    })
-
-    # Build previous attempts history
-    previous_attempts = state.get("previous_workflow_attempts", [])
-    previous_attempts = list(previous_attempts)  # Make a copy
-    previous_attempts.append({
-        "iteration": workflow_iteration,
-        "final_result": final_result,
-        "rejection_reason": verification.rejection_reason,
-        "agent_results": agent_results,
-    })
-
-    # Build retry instruction for analyze_and_plan
-    retry_instruction = _build_workflow_retry_instruction(
-        original_prompt=original_prompt,
-        rejection_reason=verification.rejection_reason,
-        previous_attempts=previous_attempts,
-    )
-
-    return Command(
-        update={
-            "final_verification_result": verification.model_dump(),
-            "workflow_iteration": workflow_iteration + 1,
-            "previous_workflow_attempts": previous_attempts,
-            # Reset workflow-related state for restart
-            "agent_results": [],
-            "verification_results": [],
-            "verification_iteration": 0,
-            "final_result": None,
-            # Add retry instruction to guide different approach
-            "retry_instruction": retry_instruction,
-        },
-        goto="analyze_and_plan",
-    )
-
-
-def _generate_failure_summary(
-    original_prompt: str,
-    rejection_reason: str | None,
-    improvement_suggestions: list[str],
-    attempts: int,
-) -> str:
-    """Generate a failure summary when max iterations reached.
-
-    Creates a concise summary explaining why the task could not be completed,
-    including the original user request and suggestions for improvement.
-
-    Args:
-        original_prompt: The user's original request.
-        rejection_reason: The reason for the final rejection.
-        improvement_suggestions: List of suggestions for improvement.
-        attempts: Total number of attempts made.
-
-    Returns:
-        A formatted failure summary string.
-    """
-    summary_parts = [
-        "## Task Could Not Fully Meet Requirements",
-        "",
-        f"**Original User Request:** {original_prompt}",
-        "",
-        f"**Attempts Made:** {attempts}",
-        "",
-        f"**Rejection Reason:** {rejection_reason or 'Unknown reason'}",
-    ]
-
-    if improvement_suggestions:
-        summary_parts.extend([
-            "",
-            "**Improvement Suggestions:**",
-            *[f"- {s}" for s in improvement_suggestions],
-        ])
-
-    summary_parts.extend([
-        "",
-        "---",
-        "*The system has made its best effort to complete the task but could not "
-        "fully satisfy all requirements.*",
-        "*Suggestion: Please try simplifying your request or providing more "
-        "specific guidance.*",
-    ])
-
-    return "\n".join(summary_parts)
-
-
-def _build_workflow_retry_instruction(
-    original_prompt: str,
-    rejection_reason: str | None,
-    previous_attempts: list[dict[str, Any]],
-) -> str:
-    """Build workflow retry instruction for analyze_and_plan.
-
-    Creates an instruction that guides the system to try a fundamentally
-    different approach when restarting the workflow.
-
-    Args:
-        original_prompt: The user's original request.
-        rejection_reason: The reason for the current rejection.
-        previous_attempts: History of previous workflow attempts.
-
-    Returns:
-        A formatted retry instruction string.
-    """
-    instruction_parts = [
-        "IMPORTANT: This is a RETRY of the entire workflow.",
-        "",
-        f"Original user request: {original_prompt}",
-        "",
-        "Previous attempt(s) failed verification:",
-    ]
-
-    for i, attempt in enumerate(previous_attempts):
-        reason = attempt.get("rejection_reason", "Unknown reason")
-        instruction_parts.append(f"  Attempt {i + 1}: {reason}")
-
-    instruction_parts.extend([
-        "",
-        "Please try a FUNDAMENTALLY DIFFERENT approach:",
-        "- Consider different agent assignments",
-        "- Try alternative task decomposition",
-        "- Use different reasoning strategies",
-        "",
-        "DO NOT repeat the same approach that failed before.",
-    ])
-
-    return "\n".join(instruction_parts)
 
 
 async def worker_retry(
@@ -674,11 +544,47 @@ async def worker_retry(
     """
     retry_context_dict = state.get("retry_context")
     if not retry_context_dict:
-        emit_event({
-            "type": "retry_skipped",
-            "reason": "No retry context available",
+        base_timeline = state.get("verification_timeline", []) or []
+        timeline: list[dict[str, Any]] = list(base_timeline)
+        new_timeline_entries: list[dict[str, Any]] = []
+
+        entry = {
+            "scope": "retry",
+            "state": VerificationStateCode.INITIALIZING.value,
             "timestamp": time.time(),
-        })
+            "iteration": state.get("verification_iteration", 0),
+            "max_iterations": state.get("max_verification_iterations", 3),
+            "message": "retry skipped (no context)",
+            "details": {"reason": "No retry context available"},
+        }
+        new_timeline_entries.append(entry)
+        timeline.append(entry)
+        emit_event(
+            {
+                "type": "verification_state_changed",
+                "scope": "retry",
+                "state": VerificationStateCode.ROLLBACK.value,
+                "verification_status": {
+                    "execution_id": state.get("execution_id", ""),
+                    "scope": "retry",
+                    "state": VerificationStateCode.ROLLBACK.value,
+                    "iteration": entry["iteration"],
+                    "max_iterations": entry["max_iterations"],
+                    "timestamp": entry["timestamp"],
+                    "message": entry["message"],
+                    "details": entry["details"],
+                    "timeline": timeline,
+                },
+                "timestamp": entry["timestamp"],
+            }
+        )
+        emit_event(
+            {
+                "type": "retry_skipped",
+                "reason": "No retry context available",
+                "timestamp": time.time(),
+            }
+        )
         return {"agent_results": []}
 
     # Convert dict back to RetryContext if needed
@@ -690,46 +596,119 @@ async def worker_retry(
     # Build retry prompt with assigned task and rejection context
     retry_prompt = build_retry_prompt(retry_context)
 
-    emit_event({
-        "type": "retry_triggered",
-        "iteration": retry_context.iteration,
-        "retry_prompt": retry_prompt[:200],  # Truncate to avoid overly long events
-        "timestamp": time.time(),
-    })
+    base_timeline = state.get("verification_timeline", []) or []
+    timeline: list[dict[str, Any]] = list(base_timeline)
+    new_timeline_entries: list[dict[str, Any]] = []
+
+    def emit_state_change(
+        code: VerificationStateCode,
+        *,
+        message: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        entry = {
+            "scope": "retry",
+            "state": code.value,
+            "timestamp": time.time(),
+            "iteration": retry_context.iteration,
+            "max_iterations": retry_context.max_iterations,
+            "message": message,
+            "details": details or {},
+        }
+        new_timeline_entries.append(entry)
+        timeline.append(entry)
+        emit_event(
+            {
+                "type": "verification_state_changed",
+                "scope": "retry",
+                "state": code.value,
+                "verification_status": {
+                    "execution_id": state.get("execution_id", ""),
+                    "scope": "retry",
+                    "state": code.value,
+                    "iteration": retry_context.iteration,
+                    "max_iterations": retry_context.max_iterations,
+                    "timestamp": entry["timestamp"],
+                    "message": message,
+                    "details": entry["details"],
+                    "timeline": timeline,
+                },
+                "timestamp": entry["timestamp"],
+            }
+        )
+
+    emit_state_change(
+        VerificationStateCode.RETRY_WAITING,
+        message="retry prompt built",
+    )
 
     # Get agents and task assignments from state
     agents = state.get("agents", [])
     task_assignments = state.get("task_assignments", [])
     execution_id = state.get("execution_id", "")
 
+    emit_event(
+        {
+            "type": "retry_triggered",
+            "iteration": retry_context.iteration,
+            "retry_prompt": retry_prompt[:200],  # Truncate to avoid overly long events
+            "agents": [a.get("agent_id", "") for a in task_assignments],
+            "timestamp": time.time(),
+        }
+    )
+
     results: list[dict[str, Any]] = []
 
     # Re-execute agents with the retry prompt
+    emit_state_change(
+        VerificationStateCode.RETRY_RUNNING,
+        message="retry executing agents",
+        details={"agent_count": len(task_assignments)},
+    )
     for assignment in task_assignments:
         agent_id = assignment.get("agent_id", "")
         agent = get_agent_by_id(agents, agent_id)
 
         if agent:
+            recursion_limit = getattr(agent, "kiva_recursion_limit", None) or state.get(
+                "worker_recursion_limit", 25
+            )
             result = await execute_single_agent(
                 agent=agent,
                 agent_id=agent_id,
                 task=retry_prompt,
                 execution_id=execution_id,
+                recursion_limit=recursion_limit,
             )
             results.append(result)
         else:
             # Agent not found, add error result
-            results.append({
-                "agent_id": agent_id,
-                "result": None,
-                "error": f"Agent '{agent_id}' not found for retry",
-            })
+            results.append(
+                {
+                    "agent_id": agent_id,
+                    "result": None,
+                    "error": f"Agent '{agent_id}' not found for retry",
+                }
+            )
 
-    emit_event({
-        "type": "retry_completed",
-        "iteration": retry_context.iteration,
-        "results_count": len(results),
-        "timestamp": time.time(),
-    })
+    emit_event(
+        {
+            "type": "retry_completed",
+            "iteration": retry_context.iteration,
+            "results_count": len(results),
+            "agents": [a.get("agent_id", "") for a in task_assignments],
+            "timestamp": time.time(),
+        }
+    )
+
+    emit_state_change(
+        VerificationStateCode.COMMITTING,
+        message="committing retry results",
+    )
+    emit_state_change(
+        VerificationStateCode.COMPLETED,
+        message="retry completed",
+        details={"results_count": len(results)},
+    )
 
     return {"agent_results": results}

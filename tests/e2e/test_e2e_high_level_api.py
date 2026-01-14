@@ -25,7 +25,8 @@ class TestHighLevelAPIE2E:
             return f"{city}: Sunny, 25°C"
 
         # Run without console output
-        result = kiva.run("What's the weather in Beijing?", console=False)
+        stream = kiva.run("What's the weather in Beijing?", console=False)
+        result = stream.result()
         
         assert result is not None
         print(f"\nSingle Function Agent Result: {result}")
@@ -48,7 +49,8 @@ class TestHighLevelAPIE2E:
                 """Multiply two numbers."""
                 return a * b
 
-        result = kiva.run("Calculate 5 + 3", console=False)
+        stream = kiva.run("Calculate 5 + 3", console=False)
+        result = stream.result()
         
         assert result is not None
         print(f"\nClass Agent Result: {result}")
@@ -74,10 +76,11 @@ class TestHighLevelAPIE2E:
             except Exception as e:
                 return f"Error: {e}"
 
-        result = kiva.run(
+        stream = kiva.run(
             "What's the weather in Tokyo? Also calculate 20 * 5",
             console=False
         )
+        result = stream.result()
         
         assert result is not None
         print(f"\nMultiple Agents Result: {result}")
@@ -96,7 +99,8 @@ class TestHighLevelAPIE2E:
 
         kiva.add_agent("search", "Searches for information", [search])
         
-        result = kiva.run("Search for Python tutorials", console=False)
+        stream = kiva.run("Search for Python tutorials", console=False)
+        result = stream.result()
         
         assert result is not None
         print(f"\nAdd Agent Method Result: {result}")
@@ -123,7 +127,8 @@ class TestHighLevelAPIE2E:
         
         assert len(kiva._agents) == 2
         
-        result = kiva.run("What's the weather in London?", console=False)
+        stream = kiva.run("What's the weather in London?", console=False)
+        result = stream.result()
         assert result is not None
         print(f"\nMethod Chaining Result: {result}")
 
@@ -160,7 +165,8 @@ class TestHighLevelAPIE2E:
             """Echo the text."""
             return f"Echo: {text}"
 
-        result = kiva.run("Say hello", console=False)
+        stream = kiva.run("Say hello", console=False)
+        result = stream.result()
         
         assert result is not None
         print(f"\nLow Temperature Result: {result}")
@@ -178,7 +184,8 @@ class TestHighLevelAPIE2E:
             """Simple function."""
             return input or "No input provided"
 
-        result = kiva.run("Process this", console=False)
+        stream = kiva.run("Process this", console=False)
+        result = stream.result()
         
         # Should not crash, result can be None or a string
         print(f"\nEdge Case Result: {result}")

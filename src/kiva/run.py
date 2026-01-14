@@ -31,6 +31,7 @@ async def run(
     max_iterations: int = 10,
     max_parallel_agents: int = 5,
     custom_verifiers: list | None = None,
+    worker_recursion_limit: int = 25,
 ) -> AsyncIterator[StreamEvent]:
     """Run multi-agent orchestration and yield streaming events.
 
@@ -50,6 +51,7 @@ async def run(
             verification retry. Defaults to 10.
         max_parallel_agents: Maximum concurrent agent executions. Defaults to 5.
         custom_verifiers: List of custom verifier functions. Defaults to None.
+        worker_recursion_limit: Maximum internal steps per Worker Agent execution.
 
     Yields:
         StreamEvent objects representing execution progress, including:
@@ -113,6 +115,7 @@ async def run(
         "parallel_strategy": "none",
         "total_instances": 0,
         "instance_contexts": [],
+        "worker_recursion_limit": worker_recursion_limit,
         # Verification-related fields
         "verification_results": [],
         "retry_context": None,
@@ -121,19 +124,17 @@ async def run(
         "output_schema": None,
         "custom_verifiers": custom_verifiers or [],
         "verification_warning": None,
-        # Workflow-level verification fields
-        "workflow_iteration": 0,
-        "max_workflow_iterations": 2,
-        "previous_workflow_attempts": [],
-        "retry_instruction": None,
-        "final_verification_result": None,
     }
 
     # Pass agents via configurable for Send-based instance execution
     # Increase recursion_limit to handle verification loops
+    graph_recursion_limit = max(50, max_iterations * 10, worker_recursion_limit)
     config = {
-        "configurable": {"agents": agents},
-        "recursion_limit": 100,  # Increased from default 25 to handle verification loops
+        "configurable": {
+            "agents": agents,
+            "worker_recursion_limit": worker_recursion_limit,
+        },
+        "recursion_limit": graph_recursion_limit,
     }
 
     async for chunk in graph.astream(
@@ -178,15 +179,7 @@ async def _process_stream_chunk(
     elif mode == "custom" and isinstance(data, dict):
         event_type = data.get("type", "custom")
 
-        # Normalize agent_end events to match updates mode format
-        if event_type == "agent_end":
-            result_data = {
-                "agent_id": data.get("agent_id"),
-                "invocation_id": data.get("invocation_id"),
-                "result": data.get("result"),
-            }
-            event_data = {"result": result_data, "execution_id": execution_id}
-        elif event_type in (
+        if event_type in (
             "instance_spawn",
             "instance_complete",
             "instance_start",
@@ -230,24 +223,6 @@ async def _process_stream_chunk(
                 "worker_verification_max_reached",
             ):
                 event_data["failed_agents"] = data.get("failed_agents")
-        # Final verification events
-        elif event_type in (
-            "final_verification_start",
-            "final_verification_passed",
-            "final_verification_failed",
-            "final_verification_max_reached",
-        ):
-            event_data = {
-                "iteration": data.get("iteration"),
-                "execution_id": execution_id,
-            }
-            # Add event-specific fields
-            if event_type == "final_verification_failed":
-                event_data["reason"] = data.get("reason")
-                event_data["action"] = data.get("action")
-            elif event_type == "final_verification_max_reached":
-                event_data["reason"] = data.get("reason")
-                event_data["failure_summary"] = data.get("failure_summary")
         # Retry events
         elif event_type in ("retry_triggered", "retry_completed", "retry_skipped"):
             event_data = {
@@ -365,24 +340,6 @@ async def _process_node_update(
                     "results": verification_results,
                     "iteration": verification_iteration,
                     "warning": verification_warning,
-                    "execution_id": execution_id,
-                },
-                timestamp=time.time(),
-            )
-
-    elif node_name == "verify_final_result":
-        # Final verification node updates
-        final_verification_result = node_data.get("final_verification_result")
-        final_verification_warning = node_data.get("final_verification_warning")
-        workflow_iteration = node_data.get("workflow_iteration")
-
-        if final_verification_result:
-            yield StreamEvent(
-                type="final_verification_result_updated",
-                data={
-                    "result": final_verification_result,
-                    "iteration": workflow_iteration,
-                    "warning": final_verification_warning,
                     "execution_id": execution_id,
                 },
                 timestamp=time.time(),

@@ -9,7 +9,7 @@ A multi-agent orchestration SDK for building intelligent workflows
 - **Three Workflow Patterns**: Router (simple), Supervisor (parallel), and Parliament (deliberative)
 - **Automatic Complexity Analysis**: Intelligent workflow selection based on task complexity
 - **Parallel Agent Instances**: Spawn multiple instances of the same agent for parallel subtask execution
-- **Output Verification**: Dual-layer verification system with automatic retry and self-healing
+- **Output Verification**: Worker output verification with automatic retry and graceful degradation
 - **Custom Verifiers**: Extensible verification rules via `@kiva.verifier` decorator
 - **Modular Architecture**: AgentRouter for organizing agents across multiple files
 - **Rich Console Output**: Beautiful terminal visualization (optional)
@@ -65,9 +65,24 @@ class MathTools:
 kiva.run("What's the weather in Tokyo? Also calculate 15 * 8")
 
 # Silent mode - no console output
-result = kiva.run("What's the weather in Beijing?", console=False)
+result = kiva.run("What's the weather in Beijing?", console=False).result()
 print(result)
 ```
+
+### Event Stream Integration (console=False)
+
+When you need a full event stream (instead of Rich console UI), use:
+
+```python
+result = kiva.run("...", console=False)
+for event in result:
+    # Each event contains: type, data, timestamp, agent_id
+    # Build your own state machine from the full stream
+    print(event.to_dict())
+print("FINAL:", result.result())
+```
+
+See [docs/run-streaming-api.md](docs/run-streaming-api.md) for the full event catalog and payload fields.
 
 ### Modular Application with AgentRouter
 
@@ -127,7 +142,7 @@ Implements iterative deliberation with conflict resolution. Designed for complex
 
 ## Output Verification
 
-Kiva includes a dual-layer verification system that automatically validates agent outputs:
+Kiva includes worker output verification that automatically validates worker outputs and can trigger retries:
 
 ```python
 from kiva import Kiva, VerificationResult, VerificationStatus

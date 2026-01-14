@@ -21,7 +21,7 @@ class TestErrorHandlingE2E:
 
         # Running without any agents should raise an error
         with pytest.raises(Exception):
-            kiva.run("Test prompt", console=False)
+            kiva.run("Test prompt", console=False).result()
 
         print("\nNo agents error handled correctly")
 
@@ -39,7 +39,7 @@ class TestErrorHandlingE2E:
             return weather_func(city)
 
         # Empty prompt should still work (LLM will handle it)
-        result = kiva.run("", console=False)
+        result = kiva.run("", console=False).result()
         print(f"\nEmpty prompt result: {result}")
 
     def test_very_long_prompt(self, api_config, weather_func):
@@ -58,7 +58,7 @@ class TestErrorHandlingE2E:
         # Create a long prompt
         long_prompt = "What's the weather? " * 100
 
-        result = kiva.run(long_prompt, console=False)
+        result = kiva.run(long_prompt, console=False).result()
         assert result is not None
         print(f"\nLong prompt handled successfully")
 
@@ -77,7 +77,7 @@ class TestErrorHandlingE2E:
 
         special_prompt = "Weather in 北京? <script>alert('test')</script> 🌤️"
 
-        result = kiva.run(special_prompt, console=False)
+        result = kiva.run(special_prompt, console=False).result()
         assert result is not None
         print(f"\nSpecial characters handled successfully")
 
@@ -113,7 +113,7 @@ class TestErrorHandlingE2E:
 
         # Should handle gracefully
         try:
-            result = kiva.run("Use the failing tool", console=False)
+            result = kiva.run("Use the failing tool", console=False).result()
             print(f"\nFailing tool result: {result}")
         except Exception as e:
             print(f"\nFailing tool error handled: {e}")
@@ -143,7 +143,7 @@ class TestErrorHandlingE2E:
         result = kiva.run(
             "Get weather in Beijing and process some data",
             console=False
-        )
+        ).result()
 
         # Should complete with partial results
         print(f"\nPartial failure result: {result}")
@@ -164,7 +164,7 @@ class TestErrorHandlingE2E:
 
         # Should handle gracefully (no tools)
         try:
-            result = kiva.run("Do something", console=False)
+            result = kiva.run("Do something", console=False).result()
             print(f"\nEmpty agent result: {result}")
         except Exception as e:
             print(f"\nEmpty agent error: {e}")

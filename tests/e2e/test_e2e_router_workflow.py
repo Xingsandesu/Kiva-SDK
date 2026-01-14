@@ -24,7 +24,7 @@ class TestRouterWorkflowE2E:
             """Get weather for a city."""
             return weather_func(city)
 
-        result = kiva.run("What's the weather in Beijing?", console=False)
+        result = kiva.run("What's the weather in Beijing?", console=False).result()
 
         assert result is not None
         assert len(result) > 0
@@ -43,7 +43,7 @@ class TestRouterWorkflowE2E:
             """Calculate expression."""
             return calculate_func(expression)
 
-        result = kiva.run("Calculate 15 * 8", console=False)
+        result = kiva.run("Calculate 15 * 8", console=False).result()
 
         assert result is not None
         print(f"\nCalculation Result: {result}")
@@ -61,7 +61,9 @@ class TestRouterWorkflowE2E:
             """Search for information."""
             return search_func(query)
 
-        result = kiva.run("Search for information about Python", console=False)
+        result = kiva.run(
+            "Search for information about Python", console=False
+        ).result()
 
         assert result is not None
         print(f"\nSearch Result: {result}")
