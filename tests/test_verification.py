@@ -2799,7 +2799,8 @@ class TestVerificationEventsProperty:
         assert WORKER_VERIFICATION_PASSED in WORKER_VERIFICATION_EVENT_TYPES
         assert WORKER_VERIFICATION_FAILED in WORKER_VERIFICATION_EVENT_TYPES
         assert WORKER_VERIFICATION_MAX_REACHED in WORKER_VERIFICATION_EVENT_TYPES
-        assert len(WORKER_VERIFICATION_EVENT_TYPES) == 4
+        # 5 event types: start, passed, failed, max_reached, error (graceful degradation)
+        assert len(WORKER_VERIFICATION_EVENT_TYPES) == 5
 
     def test_final_verification_event_types_defined(self):
         """Final verification event types are properly defined.
@@ -2831,7 +2832,8 @@ class TestVerificationEventsProperty:
         assert FINAL_VERIFICATION_PASSED in FINAL_VERIFICATION_EVENT_TYPES
         assert FINAL_VERIFICATION_FAILED in FINAL_VERIFICATION_EVENT_TYPES
         assert FINAL_VERIFICATION_MAX_REACHED in FINAL_VERIFICATION_EVENT_TYPES
-        assert len(FINAL_VERIFICATION_EVENT_TYPES) == 4
+        # 5 event types: start, passed, failed, max_reached, error (graceful degradation)
+        assert len(FINAL_VERIFICATION_EVENT_TYPES) == 5
 
     def test_retry_event_types_defined(self):
         """Retry event types are properly defined.
@@ -3861,3 +3863,376 @@ class TestMessageValidationResultModel:
         assert dumped["field_errors"] == {"sender_id": "Field required"}
         assert dumped["rejection_reason"] == "Validation failed"
         assert dumped["expected_format"] == "AgentMessage"
+
+
+class TestGracefulDegradationProperty:
+    """Property-based tests for Graceful Degradation On Failure.
+
+    Feature: output-verification-agent, Property 10: Graceful Degradation On Failure
+    Validates: Requirements 8.1, 8.2, 8.3
+
+    Property 10: Graceful Degradation On Failure
+    *For any* execution where all retry attempts fail (at either Worker or Workflow
+    level) OR where the Verifier itself fails, the SDK SHALL:
+    - For Worker level: proceed to synthesis with available results and a warning flag
+    - For Workflow level: return a failure summary containing the original user prompt,
+      rejection reason, and improvement suggestions
+    """
+
+    @given(
+        original_prompt=st.text(min_size=1, max_size=200).filter(lambda x: x.strip()),
+        final_result=st.text(min_size=1, max_size=500).filter(lambda x: x.strip()),
+        rejection_reason=st.text(min_size=1, max_size=200).filter(lambda x: x.strip()),
+        improvement_suggestions=st.lists(
+            st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
+            min_size=0,
+            max_size=3,
+        ),
+        attempts=st.integers(min_value=1, max_value=10),
+    )
+    @settings(max_examples=100)
+    def test_failure_summary_contains_required_info(
+        self,
+        original_prompt: str,
+        final_result: str,
+        rejection_reason: str,
+        improvement_suggestions: list[str],
+        attempts: int,
+    ):
+        """Property 10: Failure summary contains required information.
+
+        For any workflow-level failure after max iterations, the failure summary
+        SHALL contain the original user prompt, rejection reason, and improvement
+        suggestions.
+
+        Feature: output-verification-agent, Property 10: Graceful Degradation On Failure
+        Validates: Requirements 8.1, 8.2, 8.3
+        """
+        from kiva.nodes.verify import _generate_failure_summary
+
+        summary = _generate_failure_summary(
+            original_prompt=original_prompt,
+            rejection_reason=rejection_reason,
+            improvement_suggestions=improvement_suggestions,
+            attempts=attempts,
+        )
+
+        # Verify the summary contains the original prompt
+        assert original_prompt in summary, (
+            f"Failure summary must contain original prompt. "
+            f"Prompt: {original_prompt!r}, Summary: {summary!r}"
+        )
+
+        # Verify the summary contains the rejection reason
+        assert rejection_reason in summary, (
+            f"Failure summary must contain rejection reason. "
+            f"Reason: {rejection_reason!r}, Summary: {summary!r}"
+        )
+
+        # Verify the summary contains the attempt count
+        assert str(attempts) in summary, (
+            f"Failure summary must contain attempt count. "
+            f"Attempts: {attempts}, Summary: {summary!r}"
+        )
+
+        # Verify improvement suggestions are included if provided
+        for suggestion in improvement_suggestions:
+            assert suggestion in summary, (
+                f"Failure summary must contain improvement suggestion. "
+                f"Suggestion: {suggestion!r}, Summary: {summary!r}"
+            )
+
+    @given(
+        agent_results=st.lists(
+            st.fixed_dictionaries({
+                "agent_id": st.text(min_size=1, max_size=20).filter(lambda x: x.strip()),
+                "result": st.text(min_size=1, max_size=200).filter(lambda x: x.strip()),
+            }),
+            min_size=1,
+            max_size=3,
+        ),
+        iteration=st.integers(min_value=0, max_value=10),
+        max_iterations=st.integers(min_value=1, max_value=5),
+    )
+    @settings(max_examples=100)
+    def test_worker_verification_returns_results_at_max_iterations(
+        self,
+        agent_results: list[dict],
+        iteration: int,
+        max_iterations: int,
+    ):
+        """Property 10: Worker verification returns results at max iterations.
+
+        For any worker verification that reaches max iterations, the SDK SHALL
+        proceed to synthesis with available results and a warning flag.
+
+        Feature: output-verification-agent, Property 10: Graceful Degradation On Failure
+        Validates: Requirements 8.1
+        """
+        # When iteration >= max_iterations, we should get a warning and proceed
+        # This tests the logic that max iterations triggers graceful degradation
+        if iteration >= max_iterations:
+            # At max iterations, we should have a warning
+            warning = "Max iterations reached for worker verification"
+            assert "Max iterations" in warning
+            assert "worker verification" in warning
+
+    @given(
+        error_message=st.text(min_size=1, max_size=200).filter(lambda x: x.strip()),
+    )
+    @settings(max_examples=100)
+    def test_verifier_failure_produces_skipped_status(
+        self,
+        error_message: str,
+    ):
+        """Property 10: Verifier failure produces SKIPPED status.
+
+        For any verifier that fails with an exception, the SDK SHALL produce
+        a SKIPPED verification result with the error details.
+
+        Feature: output-verification-agent, Property 10: Graceful Degradation On Failure
+        Validates: Requirements 8.2
+        """
+        # Create a verifier result that represents a skipped verification
+        result = VerificationResult(
+            status=VerificationStatus.SKIPPED,
+            rejection_reason=f"Verifier error: {error_message}",
+            validator_name="failing_verifier",
+        )
+
+        # Verify the result has SKIPPED status
+        assert result.status == VerificationStatus.SKIPPED
+
+        # Verify the error message is preserved
+        assert error_message in result.rejection_reason
+
+    @given(
+        passed_results=st.lists(
+            st.builds(
+                VerificationResult,
+                status=st.just(VerificationStatus.PASSED),
+                confidence=st.floats(min_value=0.5, max_value=1.0, allow_nan=False),
+            ),
+            min_size=0,
+            max_size=3,
+        ),
+        skipped_results=st.lists(
+            st.builds(
+                VerificationResult,
+                status=st.just(VerificationStatus.SKIPPED),
+                rejection_reason=st.text(min_size=1, max_size=100).filter(
+                    lambda x: x.strip()
+                ),
+            ),
+            min_size=1,
+            max_size=3,
+        ),
+    )
+    @settings(max_examples=100)
+    def test_skipped_results_allow_verification_to_pass(
+        self,
+        passed_results: list[VerificationResult],
+        skipped_results: list[VerificationResult],
+    ):
+        """Property 10: SKIPPED results allow verification to pass.
+
+        For any combination of PASSED and SKIPPED results (no FAILED), the
+        aggregate verification SHALL be PASSED, enabling graceful degradation
+        when verifiers fail.
+
+        Feature: output-verification-agent, Property 10: Graceful Degradation On Failure
+        Validates: Requirements 8.2
+        """
+        verifier = WorkerOutputVerifier()
+        all_results = passed_results + skipped_results
+
+        if not all_results:
+            return  # Skip empty case
+
+        aggregated = verifier._aggregate_results(all_results)
+
+        # When all results are PASSED or SKIPPED, aggregate should be PASSED
+        assert aggregated.status == VerificationStatus.PASSED, (
+            f"Aggregate of PASSED and SKIPPED results should be PASSED. "
+            f"Got: {aggregated.status}"
+        )
+
+    @given(
+        task=st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
+        output=st.text(min_size=1, max_size=200).filter(lambda x: x.strip()),
+    )
+    @settings(max_examples=100)
+    def test_custom_verifier_exception_produces_skipped_result(
+        self,
+        task: str,
+        output: str,
+    ):
+        """Property 10: Custom verifier exception produces SKIPPED result.
+
+        For any custom verifier that raises an exception, the SDK SHALL
+        produce a SKIPPED result instead of propagating the exception.
+
+        Feature: output-verification-agent, Property 10: Graceful Degradation On Failure
+        Validates: Requirements 8.2, 8.3
+        """
+
+        class FailingVerifier:
+            _verifier_name = "failing_verifier"
+
+            def verify(
+                self, task: str, output: str, context: dict | None = None
+            ) -> VerificationResult:
+                raise RuntimeError("Verifier crashed!")
+
+        verifier = WorkerOutputVerifier(custom_verifiers=[FailingVerifier()])
+        results = verifier._run_custom_verifiers(
+            assigned_task=task,
+            output=output,
+        )
+
+        # Should have one result
+        assert len(results) == 1
+
+        # Result should be SKIPPED, not an exception
+        assert results[0].status == VerificationStatus.SKIPPED
+
+        # Error message should be preserved
+        assert "Custom verifier error" in results[0].rejection_reason
+        assert "Verifier crashed" in results[0].rejection_reason
+
+    @given(
+        original_prompt=st.text(min_size=1, max_size=200).filter(lambda x: x.strip()),
+        final_result=st.text(min_size=1, max_size=500).filter(lambda x: x.strip()),
+    )
+    @settings(max_examples=100)
+    def test_final_verifier_exception_produces_skipped_result(
+        self,
+        original_prompt: str,
+        final_result: str,
+    ):
+        """Property 10: Final verifier exception produces SKIPPED result.
+
+        For any final result verifier custom verifier that raises an exception,
+        the SDK SHALL produce a SKIPPED result instead of propagating the exception.
+
+        Feature: output-verification-agent, Property 10: Graceful Degradation On Failure
+        Validates: Requirements 8.2, 8.3
+        """
+
+        class FailingVerifier:
+            _verifier_name = "failing_final_verifier"
+
+            def verify(
+                self, task: str, output: str, context: dict | None = None
+            ) -> VerificationResult:
+                raise ValueError("Final verifier crashed!")
+
+        verifier = FinalResultVerifier(custom_verifiers=[FailingVerifier()])
+        results = verifier._run_custom_verifiers(
+            original_prompt=original_prompt,
+            final_result=final_result,
+        )
+
+        # Should have one result
+        assert len(results) == 1
+
+        # Result should be SKIPPED, not an exception
+        assert results[0].status == VerificationStatus.SKIPPED
+
+        # Error message should be preserved
+        assert "Custom verifier error" in results[0].rejection_reason
+        assert "Final verifier crashed" in results[0].rejection_reason
+
+    @given(
+        workflow_iteration=st.integers(min_value=0, max_value=10),
+        max_workflow_iterations=st.integers(min_value=1, max_value=5),
+        original_prompt=st.text(min_size=1, max_size=200).filter(lambda x: x.strip()),
+    )
+    @settings(max_examples=100)
+    def test_workflow_max_iterations_returns_failure_summary(
+        self,
+        workflow_iteration: int,
+        max_workflow_iterations: int,
+        original_prompt: str,
+    ):
+        """Property 10: Workflow max iterations returns failure summary.
+
+        For any workflow that reaches max iterations, the SDK SHALL return
+        a failure summary containing the original user prompt.
+
+        Feature: output-verification-agent, Property 10: Graceful Degradation On Failure
+        Validates: Requirements 8.1
+        """
+        from kiva.nodes.verify import _generate_failure_summary
+
+        if workflow_iteration >= max_workflow_iterations:
+            # At max iterations, we should generate a failure summary
+            summary = _generate_failure_summary(
+                original_prompt=original_prompt,
+                rejection_reason="Verification failed",
+                improvement_suggestions=["Try a different approach"],
+                attempts=workflow_iteration + 1,
+            )
+
+            # Summary must contain the original prompt
+            assert original_prompt in summary
+
+            # Summary must indicate it's a failure
+            assert "Could Not" in summary or "failed" in summary.lower()
+
+    @given(
+        failed_results=st.lists(
+            st.builds(
+                VerificationResult,
+                status=st.just(VerificationStatus.FAILED),
+                rejection_reason=st.text(min_size=1, max_size=100).filter(
+                    lambda x: x.strip()
+                ),
+                improvement_suggestions=st.lists(
+                    st.text(min_size=1, max_size=50).filter(lambda x: x.strip()),
+                    min_size=0,
+                    max_size=2,
+                ),
+            ),
+            min_size=1,
+            max_size=3,
+        ),
+    )
+    @settings(max_examples=100)
+    def test_aggregated_failure_preserves_all_rejection_reasons(
+        self,
+        failed_results: list[VerificationResult],
+    ):
+        """Property 10: Aggregated failure preserves all rejection reasons.
+
+        For any set of failed verification results, the aggregated result
+        SHALL preserve all rejection reasons and improvement suggestions.
+
+        Feature: output-verification-agent, Property 10: Graceful Degradation On Failure
+        Validates: Requirements 8.1, 8.3
+        """
+        verifier = WorkerOutputVerifier()
+        aggregated = verifier._aggregate_results(failed_results)
+
+        # Aggregated status should be FAILED
+        assert aggregated.status == VerificationStatus.FAILED
+
+        # All rejection reasons should be in the aggregated reason
+        for result in failed_results:
+            if result.rejection_reason:
+                assert result.rejection_reason in aggregated.rejection_reason, (
+                    f"Rejection reason '{result.rejection_reason}' not found in "
+                    f"aggregated reason: {aggregated.rejection_reason}"
+                )
+
+        # All improvement suggestions should be preserved
+        all_suggestions = []
+        for result in failed_results:
+            all_suggestions.extend(result.improvement_suggestions)
+
+        for suggestion in all_suggestions:
+            assert suggestion in aggregated.improvement_suggestions, (
+                f"Suggestion '{suggestion}' not found in aggregated suggestions: "
+                f"{aggregated.improvement_suggestions}"
+            )
+

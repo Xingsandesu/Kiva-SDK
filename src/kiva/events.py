@@ -52,12 +52,14 @@ WORKER_VERIFICATION_START = "worker_verification_start"
 WORKER_VERIFICATION_PASSED = "worker_verification_passed"
 WORKER_VERIFICATION_FAILED = "worker_verification_failed"
 WORKER_VERIFICATION_MAX_REACHED = "worker_verification_max_reached"
+WORKER_VERIFICATION_ERROR = "worker_verification_error"
 
 # Final Verification Event Types
 FINAL_VERIFICATION_START = "final_verification_start"
 FINAL_VERIFICATION_PASSED = "final_verification_passed"
 FINAL_VERIFICATION_FAILED = "final_verification_failed"
 FINAL_VERIFICATION_MAX_REACHED = "final_verification_max_reached"
+FINAL_VERIFICATION_ERROR = "final_verification_error"
 
 # Retry Event Types
 RETRY_TRIGGERED = "retry_triggered"
@@ -70,6 +72,7 @@ WORKER_VERIFICATION_EVENT_TYPES = [
     WORKER_VERIFICATION_PASSED,
     WORKER_VERIFICATION_FAILED,
     WORKER_VERIFICATION_MAX_REACHED,
+    WORKER_VERIFICATION_ERROR,
 ]
 
 FINAL_VERIFICATION_EVENT_TYPES = [
@@ -77,6 +80,7 @@ FINAL_VERIFICATION_EVENT_TYPES = [
     FINAL_VERIFICATION_PASSED,
     FINAL_VERIFICATION_FAILED,
     FINAL_VERIFICATION_MAX_REACHED,
+    FINAL_VERIFICATION_ERROR,
 ]
 
 RETRY_EVENT_TYPES = [

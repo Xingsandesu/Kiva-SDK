@@ -44,6 +44,11 @@ async def verify_worker_output(
     Verification target: task_assignment.task (the specific task assigned to
     each Worker), NOT state.prompt (user's original request).
 
+    Graceful degradation:
+    - If the verifier itself fails with an exception, verification is bypassed
+      and the worker output is returned with a warning flag.
+    - Error events are emitted with detailed failure information.
+
     Args:
         state: The current orchestrator state containing agent results and
             task assignments.
@@ -58,6 +63,7 @@ async def verify_worker_output(
         - worker_verification_passed: When all workers pass verification
         - worker_verification_failed: When one or more workers fail
         - worker_verification_max_reached: When max iterations exceeded
+        - worker_verification_error: When verifier itself fails (graceful degradation)
     """
     agent_results = state.get("agent_results", [])
     task_assignments = state.get("task_assignments", [])
@@ -71,13 +77,31 @@ async def verify_worker_output(
         "timestamp": time.time(),
     })
 
-    # Create Worker output verifier
-    verifier = WorkerOutputVerifier(
-        model_name=state.get("model_name", "gpt-4o"),
-        api_key=state.get("api_key"),
-        base_url=state.get("base_url"),
-        custom_verifiers=state.get("custom_verifiers", []),
-    )
+    # Create Worker output verifier with graceful degradation on failure
+    try:
+        verifier = WorkerOutputVerifier(
+            model_name=state.get("model_name", "gpt-4o"),
+            api_key=state.get("api_key"),
+            base_url=state.get("base_url"),
+            custom_verifiers=state.get("custom_verifiers", []),
+        )
+    except Exception as e:
+        # Graceful degradation: if verifier creation fails, bypass verification
+        emit_event({
+            "type": "worker_verification_error",
+            "error": f"Failed to create verifier: {e}",
+            "action": "bypass_verification",
+            "timestamp": time.time(),
+        })
+        return Command(
+            update={
+                "verification_results": [],
+                "verification_warning": (
+                    f"Verification bypassed due to verifier error: {e}"
+                ),
+            },
+            goto="synthesize_results",
+        )
 
     results: list[VerificationResult] = []
     failed_agents: list[dict[str, Any]] = []
@@ -94,14 +118,31 @@ async def verify_worker_output(
         )
 
         # Verify Worker output against assigned task (NOT original prompt)
-        verification = await verifier.verify(
-            assigned_task=assigned_task,
-            output=result.get("result", ""),
-            schema=state.get("output_schema"),
-        )
+        # with graceful degradation on verification failure
+        try:
+            verification = await verifier.verify(
+                assigned_task=assigned_task,
+                output=result.get("result", ""),
+                schema=state.get("output_schema"),
+            )
+        except Exception as e:
+            # Graceful degradation: if verification fails, create SKIPPED result
+            emit_event({
+                "type": "worker_verification_error",
+                "agent_id": agent_id,
+                "error": str(e),
+                "action": "skip_verification",
+                "timestamp": time.time(),
+            })
+            verification = VerificationResult(
+                status=VerificationStatus.SKIPPED,
+                rejection_reason=f"Verification failed with error: {e}",
+                validator_name="graceful_degradation",
+            )
+
         results.append(verification)
 
-        if verification.status != VerificationStatus.PASSED:
+        if verification.status == VerificationStatus.FAILED:
             failed_agents.append({
                 "agent_id": agent_id,
                 "assigned_task": assigned_task,
@@ -109,18 +150,37 @@ async def verify_worker_output(
                 "previous_output": result.get("result", ""),
             })
 
-    # Check if all passed
-    all_passed = all(r.status == VerificationStatus.PASSED for r in results)
+    # Check if all passed (PASSED or SKIPPED are both acceptable for graceful
+    # degradation)
+    all_passed = all(
+        r.status in (VerificationStatus.PASSED, VerificationStatus.SKIPPED)
+        for r in results
+    )
+
+    # Check if any were skipped (for warning purposes)
+    any_skipped = any(r.status == VerificationStatus.SKIPPED for r in results)
 
     if all_passed:
-        emit_event({
+        event_data = {
             "type": "worker_verification_passed",
             "iteration": iteration,
             "results": [r.model_dump() for r in results],
             "timestamp": time.time(),
-        })
+        }
+        if any_skipped:
+            event_data["warning"] = "Some verifications were skipped due to errors"
+        emit_event(event_data)
+
+        update_data: dict[str, Any] = {
+            "verification_results": [r.model_dump() for r in results],
+        }
+        if any_skipped:
+            update_data["verification_warning"] = (
+                "Some verifications were skipped due to errors"
+            )
+
         return Command(
-            update={"verification_results": [r.model_dump() for r in results]},
+            update=update_data,
             goto="synthesize_results",
         )
 
@@ -300,6 +360,11 @@ async def verify_final_result(
     - If max iterations reached: return failure summary explaining the reason
       and the user's original input
 
+    Graceful degradation:
+    - If the verifier itself fails with an exception, verification is bypassed
+      and the final result is returned with a warning flag.
+    - Error events are emitted with detailed failure information.
+
     Args:
         state: The current orchestrator state containing final_result and
             original prompt.
@@ -314,6 +379,7 @@ async def verify_final_result(
         - final_verification_passed: When final result passes verification
         - final_verification_failed: When final result fails verification
         - final_verification_max_reached: When max workflow iterations exceeded
+        - final_verification_error: When verifier itself fails (graceful degradation)
     """
     final_result = state.get("final_result", "")
     original_prompt = state.get("prompt", "")
@@ -327,20 +393,83 @@ async def verify_final_result(
         "timestamp": time.time(),
     })
 
-    # Create final result verifier
-    verifier = FinalResultVerifier(
-        model_name=state.get("model_name", "gpt-4o"),
-        api_key=state.get("api_key"),
-        base_url=state.get("base_url"),
-        custom_verifiers=state.get("custom_verifiers", []),
-    )
+    # Create final result verifier with graceful degradation on failure
+    try:
+        verifier = FinalResultVerifier(
+            model_name=state.get("model_name", "gpt-4o"),
+            api_key=state.get("api_key"),
+            base_url=state.get("base_url"),
+            custom_verifiers=state.get("custom_verifiers", []),
+        )
+    except Exception as e:
+        # Graceful degradation: if verifier creation fails, bypass verification
+        emit_event({
+            "type": "final_verification_error",
+            "error": f"Failed to create verifier: {e}",
+            "action": "bypass_verification",
+            "timestamp": time.time(),
+        })
+        return Command(
+            update={
+                "final_verification_result": VerificationResult(
+                    status=VerificationStatus.SKIPPED,
+                    rejection_reason=f"Verification bypassed due to error: {e}",
+                    validator_name="graceful_degradation",
+                ).model_dump(),
+                "final_verification_warning": (
+                    f"Verification bypassed due to verifier error: {e}"
+                ),
+            },
+            goto=END,
+        )
 
     # Verify final result against user's original prompt
-    verification = await verifier.verify(
-        original_prompt=original_prompt,
-        final_result=final_result or "",
-        worker_results=agent_results,
-    )
+    # with graceful degradation on verification failure
+    try:
+        verification = await verifier.verify(
+            original_prompt=original_prompt,
+            final_result=final_result or "",
+            worker_results=agent_results,
+        )
+    except Exception as e:
+        # Graceful degradation: if verification fails, bypass and return result
+        emit_event({
+            "type": "final_verification_error",
+            "error": str(e),
+            "action": "bypass_verification",
+            "timestamp": time.time(),
+        })
+        return Command(
+            update={
+                "final_verification_result": VerificationResult(
+                    status=VerificationStatus.SKIPPED,
+                    rejection_reason=f"Verification failed with error: {e}",
+                    validator_name="graceful_degradation",
+                ).model_dump(),
+                "final_verification_warning": (
+                    f"Verification bypassed due to error: {e}"
+                ),
+            },
+            goto=END,
+        )
+
+    # Handle SKIPPED status (from internal graceful degradation)
+    if verification.status == VerificationStatus.SKIPPED:
+        emit_event({
+            "type": "final_verification_passed",
+            "iteration": workflow_iteration,
+            "warning": "Verification was skipped due to internal errors",
+            "timestamp": time.time(),
+        })
+        return Command(
+            update={
+                "final_verification_result": verification.model_dump(),
+                "final_verification_warning": (
+                    "Verification was skipped due to internal errors"
+                ),
+            },
+            goto=END,
+        )
 
     if verification.status == VerificationStatus.PASSED:
         emit_event({
