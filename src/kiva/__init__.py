@@ -35,68 +35,27 @@ Example:
         kiva = Kiva(base_url="...", api_key="...", model="gpt-4o")
         kiva.include_router(router)
         kiva.run("What's the weather?")
-
-    Low-level API::
-
-        from kiva import run, create_agent, ChatOpenAI, tool
-
-        async for event in run(prompt="...", agents=[...]):
-            print(event.type, event.data)
 """
 
-# Re-export LangChain essentials for convenience
-from langchain.agents import create_agent
-from langchain_core.tools import tool
-from langchain_openai import ChatOpenAI
-
-# Core API
+# High-level API (public)
 from kiva.client import Kiva
-from kiva.console import run_with_console
-from kiva.events import StreamEvent
+
+# Exceptions (public)
 from kiva.exceptions import (
     AgentError,
     ConfigurationError,
     SDKError,
     WorkflowError,
-    wrap_agent_error,
 )
-from kiva.graph import build_orchestrator_graph, get_graph_edges, get_graph_nodes
 from kiva.router import AgentRouter
-from kiva.run import run
-from kiva.state import (
-    AgentInstanceState,
-    OrchestratorState,
-    PlanningResult,
-    TaskAssignment,
-)
 
 __all__ = [
-    # Version
-    "__version__",
     # High-level API
     "Kiva",
     "AgentRouter",
-    # Core functions
-    "run",
-    "run_with_console",
-    # Events and exceptions
-    "StreamEvent",
+    # Exceptions
     "SDKError",
     "ConfigurationError",
     "AgentError",
     "WorkflowError",
-    "wrap_agent_error",
-    # Graph utilities
-    "build_orchestrator_graph",
-    "get_graph_nodes",
-    "get_graph_edges",
-    # State types
-    "OrchestratorState",
-    "AgentInstanceState",
-    "TaskAssignment",
-    "PlanningResult",
-    # LangChain re-exports
-    "create_agent",
-    "ChatOpenAI",
-    "tool",
 ]

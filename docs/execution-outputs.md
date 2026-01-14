@@ -55,7 +55,7 @@ Approximately 110-120 events (including token streaming)
 ### Code Example
 
 ```python
-from kiva import run
+from kiva import Kiva
 import os
 
 # Get configuration from environment
@@ -63,15 +63,15 @@ api_base = os.getenv("KIVA_API_BASE")
 api_key = os.getenv("KIVA_API_KEY")
 model = os.getenv("KIVA_MODEL")
 
-async for event in run(
-    prompt="What's the weather in Beijing?",
-    agents=[weather_agent],
-    model_name=model,
-    api_key=api_key,
-    base_url=api_base,
-):
-    if event.type == "final_result":
-        print(event.data["result"])
+kiva = Kiva(base_url=api_base, api_key=api_key, model=model)
+
+@kiva.agent("weather", "Gets weather information")
+def get_weather(city: str) -> str:
+    """Get weather for a city."""
+    return f"{city}: Sunny, 25°C"
+
+result = kiva.run("What's the weather in Beijing?", console=False)
+print(result)
 ```
 
 ---
@@ -137,25 +137,25 @@ Approximately 200-220 events
 ### Code Example
 
 ```python
-from kiva import run
+from kiva import Kiva
 import os
 
 api_base = os.getenv("KIVA_API_BASE")
 api_key = os.getenv("KIVA_API_KEY")
 model = os.getenv("KIVA_MODEL")
 
-async for event in run(
-    prompt="What's the weather in Tokyo? Also calculate 25 * 4",
-    agents=[weather_agent, calculator_agent],
-    workflow_override="supervisor",
-    model_name=model,
-    api_key=api_key,
-    base_url=api_base,
-):
-    if event.type == "parallel_start":
-        print(f"Starting parallel execution: {event.data['agent_ids']}")
-    elif event.type == "final_result":
-        print(event.data["result"])
+kiva = Kiva(base_url=api_base, api_key=api_key, model=model)
+
+@kiva.agent("weather", "Gets weather information")
+def get_weather(city: str) -> str:
+    return f"{city}: Sunny, 25°C"
+
+@kiva.agent("calculator", "Performs calculations")
+def calculate(expression: str) -> str:
+    return str(eval(expression))
+
+result = kiva.run("What's the weather in Tokyo? Also calculate 25 * 4", console=False)
+print(result)
 ```
 
 ---
@@ -208,26 +208,25 @@ Approximately 140-160 events per iteration
 ### Code Example
 
 ```python
-from kiva import run
+from kiva import Kiva
 import os
 
 api_base = os.getenv("KIVA_API_BASE")
 api_key = os.getenv("KIVA_API_KEY")
 model = os.getenv("KIVA_MODEL")
 
-async for event in run(
-    prompt="Should I go outside today? Check weather and give advice",
-    agents=[weather_agent, search_agent],
-    workflow_override="parliament",
-    max_iterations=3,
-    model_name=model,
-    api_key=api_key,
-    base_url=api_base,
-):
-    if event.type == "parallel_start":
-        print(f"Iteration {event.data.get('iteration', 0)}")
-    elif event.type == "parallel_complete":
-        print(f"Conflicts: {event.data.get('conflicts_found', 0)}")
+kiva = Kiva(base_url=api_base, api_key=api_key, model=model)
+
+@kiva.agent("weather", "Gets weather information")
+def get_weather(city: str) -> str:
+    return f"{city}: Sunny, 25°C"
+
+@kiva.agent("search", "Searches for information")
+def search(query: str) -> str:
+    return f"Results for: {query}"
+
+result = kiva.run("Should I go outside today? Check weather and give advice", console=False)
+print(result)
 ```
 
 ---
@@ -321,25 +320,26 @@ Approximately 200-220 events (varies with instance count)
 ### Code Example
 
 ```python
-from kiva import run
+from kiva import Kiva
 import os
 
 api_base = os.getenv("KIVA_API_BASE")
 api_key = os.getenv("KIVA_API_KEY")
 model = os.getenv("KIVA_MODEL")
 
-async for event in run(
-    prompt="Get weather for Beijing, Tokyo, and London",
-    agents=[weather_agent],
-    max_parallel_agents=5,
-    model_name=model,
-    api_key=api_key,
-    base_url=api_base,
-):
-    if event.type == "instance_spawn":
-        print(f"Spawned: {event.data['instance_id']}")
-    elif event.type == "instance_end":
-        print(f"Completed: {event.data['result']}")
+kiva = Kiva(base_url=api_base, api_key=api_key, model=model)
+
+@kiva.agent("weather", "Gets weather information")
+def get_weather(city: str) -> str:
+    cities = {
+        "beijing": "Beijing: Sunny, 25°C",
+        "tokyo": "Tokyo: Cloudy, 22°C",
+        "london": "London: Rainy, 15°C",
+    }
+    return cities.get(city.lower(), f"{city}: Weather unavailable")
+
+result = kiva.run("Get weather for Beijing, Tokyo, and London", console=False)
+print(result)
 ```
 
 ---
@@ -361,33 +361,19 @@ async for event in run(
 
 ### Common Errors
 
-#### 1. Empty Agents List
+#### 1. No Agents Registered
 
 ```python
-# ❌ This will raise ConfigurationError
-async for event in run(prompt="test", agents=[]):
-    pass
+from kiva import Kiva
 
-# Error: agents list cannot be empty
+kiva = Kiva(base_url="...", api_key="...", model="gpt-4o")
+# No agents registered - will have no agents to execute
+result = kiva.run("test")  # May not produce expected results
 ```
 
-#### 2. Invalid Agent Type
+#### 2. Agent Tool Execution Failure
 
-```python
-# ❌ Agent without ainvoke method
-class InvalidAgent:
-    def invoke(self, data):
-        return data
-
-async for event in run(prompt="test", agents=[InvalidAgent()]):
-    pass
-
-# Error: Agent at index 0 must have ainvoke method. Please use create_agent() to create agents.
-```
-
-#### 3. Agent Execution Failure
-
-When an agent fails during execution, the SDK handles it gracefully:
+When an agent's tool fails during execution, the SDK handles it gracefully:
 
 ```
 [AGENT_END]
@@ -493,36 +479,22 @@ To verify output patterns in your tests:
 
 ```python
 import pytest
-from kiva import run
+from kiva import Kiva
 
 @pytest.mark.asyncio
 async def test_output_pattern():
     """Test that output follows expected pattern."""
-    events = []
+    kiva = Kiva(base_url="...", api_key="...", model="gpt-4o")
     
-    async for event in run(
-        prompt="Test prompt",
-        agents=[test_agent],
-        model_name="...",
-        api_key="...",
-        base_url="...",
-    ):
-        events.append(event)
+    @kiva.agent("test", "Test agent")
+    def test_func(query: str) -> str:
+        return f"Result: {query}"
     
-    # Verify event sequence
-    event_types = [e.type for e in events]
-    assert "workflow_selected" in event_types
-    assert "final_result" in event_types
+    result = await kiva.run_async("Test prompt", console=False)
     
-    # Verify workflow_selected comes before final_result
-    workflow_idx = event_types.index("workflow_selected")
-    final_idx = event_types.index("final_result")
-    assert workflow_idx < final_idx
-    
-    # Verify final result structure
-    final_event = next(e for e in events if e.type == "final_result")
-    assert "result" in final_event.data
-    assert "execution_id" in final_event.data
+    # Verify result
+    assert result is not None
+    assert isinstance(result, str)
 ```
 
 ---

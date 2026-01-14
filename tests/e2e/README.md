@@ -74,23 +74,6 @@ Tests the high-level Kiva client API.
 
 **Run:** `uv run --dev pytest tests/e2e/test_e2e_high_level_api.py -v`
 
-#### `test_e2e_low_level_api.py`
-Tests the low-level run() async generator API.
-
-**Scenarios:**
-- Returns async iterator
-- Yields StreamEvent objects
-- Event types
-- Token streaming
-- Workflow selected event
-- Final result event
-- Execution ID consistency
-- Multiple agents
-- Event timestamps
-- Agent events
-
-**Run:** `uv run --dev pytest tests/e2e/test_e2e_low_level_api.py -v`
-
 #### `test_e2e_agent_router.py`
 Tests the AgentRouter for modular organization.
 
@@ -123,20 +106,6 @@ Tests parallel agent instance spawning.
 
 **Run:** `uv run --dev pytest tests/e2e/test_e2e_parallel_instances.py -v`
 
-#### `test_e2e_console_output.py`
-Tests the rich console visualization.
-
-**Scenarios:**
-- Basic execution
-- Multi-agent display
-- Custom refresh rate
-- Parallel instances display
-- Three agents display
-- Long result handling
-- Special characters
-
-**Run:** `uv run --dev pytest tests/e2e/test_e2e_console_output.py -v`
-
 ### Error Handling & Edge Cases
 
 #### `test_e2e_error_handling.py`
@@ -158,55 +127,6 @@ Tests error handling and boundary conditions.
 
 **Run:** `uv run --dev pytest tests/e2e/test_e2e_error_handling.py -v`
 
-### Consistency & Validation
-
-#### `test_e2e_consistency.py`
-Tests API consistency across different interfaces.
-
-**Scenarios:**
-- run() and run_with_console() consistency
-- Sync and async consistency
-- Event structure consistency
-- Execution ID format
-- Final result structure
-- Agent event consistency
-- Decorator vs add_agent consistency
-
-**Run:** `uv run --dev pytest tests/e2e/test_e2e_consistency.py -v`
-
-#### `test_e2e_output_validation.py`
-Validates output patterns match documentation.
-
-**Scenarios:**
-- Router workflow pattern
-- Supervisor workflow pattern
-- Parliament workflow pattern
-- Parallel instances pattern
-- Event structure consistency
-- Execution ID consistency
-- Timestamp ordering
-- Final result presence
-- Workflow selected ordering
-
-**Run:** `uv run --dev pytest tests/e2e/test_e2e_output_validation.py -v`
-
-### Documentation & Capture
-
-#### `test_e2e_output_capture.py`
-Captures real execution outputs for documentation.
-
-**Scenarios:**
-- Router workflow output
-- Supervisor workflow output
-- Parliament workflow output
-- Parallel instances output
-- Error handling output
-- High-level API output
-
-**Run:** `uv run --dev pytest tests/e2e/test_e2e_output_capture.py -v -s`
-
-**Output:** Saves JSON files to `docs/outputs/`
-
 ## Running Tests
 
 ### Run All E2E Tests
@@ -227,12 +147,6 @@ uv run --dev pytest tests/e2e/test_e2e_router_workflow.py -v
 uv run --dev pytest tests/e2e/test_e2e_router_workflow.py::TestRouterWorkflowE2E::test_router_simple_weather_query -v
 ```
 
-### Run with Output Capture
-
-```bash
-uv run --dev pytest tests/e2e/test_e2e_output_capture.py -v -s
-```
-
 ### Run with Coverage
 
 ```bash
@@ -241,16 +155,14 @@ uv run --dev pytest tests/e2e/ --cov=src/kiva --cov-report=html
 
 ## Test Statistics
 
-- **Total Test Files:** 10
-- **Total Test Cases:** ~80+
+- **Total Test Files:** 7
+- **Total Test Cases:** ~60+
 - **Coverage Areas:**
   - 3 Workflow types (Router, Supervisor, Parliament)
-  - 3 API levels (High, Mid, Low)
+  - High-level API
   - Parallel instances
   - Error handling
-  - Console output
-  - API consistency
-  - Output validation
+  - AgentRouter modular organization
 
 ## Test Fixtures
 

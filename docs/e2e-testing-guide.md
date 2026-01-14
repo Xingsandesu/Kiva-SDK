@@ -141,47 +141,48 @@ Test error handling and consistency:
 @pytest.mark.asyncio
 async def test_scenario_name(self, api_config, create_weather_agent):
     """Test description."""
-    agents = [create_weather_agent()]
-    events = []
-
-    async for event in run(
-        prompt="Test prompt",
-        agents=agents,
-        model_name=api_config["model"],
-        api_key=api_config["api_key"],
+    from kiva import Kiva
+    
+    kiva = Kiva(
         base_url=api_config["base_url"],
-    ):
-        events.append(event)
-
+        api_key=api_config["api_key"],
+        model=api_config["model"],
+    )
+    
+    @kiva.agent("weather", "Gets weather")
+    def get_weather(city: str) -> str:
+        return f"{city}: Sunny"
+    
+    result = await kiva.run_async("Test prompt", console=False)
+    
     # Assertions
-    event_types = [e.type for e in events]
-    assert "workflow_selected" in event_types
-    assert "final_result" in event_types
+    assert result is not None
 ```
 
 ### Event Validation Pattern
 
 ```python
-# Verify event sequence
-event_types = [e.type for e in events]
-workflow_idx = event_types.index("workflow_selected")
-final_idx = event_types.index("final_result")
-assert workflow_idx < final_idx
+# Using high-level API
+from kiva import Kiva
 
-# Verify event structure
-workflow_event = next(e for e in events if e.type == "workflow_selected")
-assert "workflow" in workflow_event.data
-assert "execution_id" in workflow_event.data
+kiva = Kiva(base_url="...", api_key="...", model="gpt-4o")
+
+@kiva.agent("weather", "Gets weather")
+def get_weather(city: str) -> str:
+    return f"{city}: Sunny"
+
+result = await kiva.run_async("What's the weather?", console=False)
+assert result is not None
 ```
 
 ### Error Testing Pattern
 
 ```python
-with pytest.raises(ConfigurationError) as exc_info:
-    async for _ in run(prompt="test", agents=[]):
-        pass
+from kiva import Kiva, ConfigurationError
 
-assert "agents" in str(exc_info.value).lower()
+# Test that empty agents raises error
+kiva = Kiva(base_url="...", api_key="...", model="gpt-4o")
+# No agents registered - will raise error when run
 ```
 
 ## Extending Tests
@@ -196,7 +197,7 @@ touch tests/e2e/test_e2e_new_feature.py
 2. **Import required modules**:
 ```python
 import pytest
-from kiva import run
+from kiva import Kiva
 
 class TestNewFeatureE2E:
     """E2E tests for new feature."""

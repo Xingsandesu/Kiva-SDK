@@ -4,9 +4,9 @@ import os
 from pathlib import Path
 
 import pytest
-from langchain.agents import create_agent
-from langchain_core.tools import tool
-from langchain_openai import ChatOpenAI
+
+from kiva import Kiva
+
 
 def _strip_quotes(value: str) -> str:
     value = value.strip()
@@ -77,20 +77,18 @@ def api_config():
 
 
 @pytest.fixture
-def create_model(api_config):
-    """Factory fixture to create ChatOpenAI model."""
-    def _create_model(temperature: float = 0.7):
-        return ChatOpenAI(
-            model=api_config["model"],
-            api_key=api_config["api_key"],
+def create_kiva(api_config):
+    """Factory fixture to create Kiva instance."""
+    def _create_kiva():
+        return Kiva(
             base_url=api_config["base_url"],
-            temperature=temperature,
+            api_key=api_config["api_key"],
+            model=api_config["model"],
         )
-    return _create_model
+    return _create_kiva
 
 
-# Common tools for testing
-@tool
+# Common tool functions for testing
 def get_weather(city: str) -> str:
     """Get current weather for a city."""
     weather_data = {
@@ -103,21 +101,18 @@ def get_weather(city: str) -> str:
     return weather_data.get(city.lower(), f"{city}: Weather data unavailable")
 
 
-@tool
 def calculate(expression: str) -> str:
     """Evaluate a mathematical expression safely."""
     try:
-        # Only allow safe operations
         allowed_chars = set("0123456789+-*/.() ")
         if not all(c in allowed_chars for c in expression):
-            return f"Error: Invalid characters in expression"
+            return "Error: Invalid characters in expression"
         result = eval(expression)
         return str(result)
     except Exception as e:
         return f"Calculation error: {e}"
 
 
-@tool
 def search_info(query: str) -> str:
     """Search for information in a knowledge base."""
     knowledge_base = {
@@ -134,7 +129,6 @@ def search_info(query: str) -> str:
     return f"No information found for: {query}"
 
 
-@tool
 def translate(text: str, target_language: str) -> str:
     """Translate text to target language (mock implementation)."""
     translations = {
@@ -149,68 +143,24 @@ def translate(text: str, target_language: str) -> str:
 
 
 @pytest.fixture
-def weather_tool():
-    """Return weather tool."""
+def weather_func():
+    """Return weather function."""
     return get_weather
 
 
 @pytest.fixture
-def calculate_tool():
-    """Return calculate tool."""
+def calculate_func():
+    """Return calculate function."""
     return calculate
 
 
 @pytest.fixture
-def search_tool():
-    """Return search tool."""
+def search_func():
+    """Return search function."""
     return search_info
 
 
 @pytest.fixture
-def translate_tool():
-    """Return translate tool."""
+def translate_func():
+    """Return translate function."""
     return translate
-
-
-@pytest.fixture
-def create_weather_agent(create_model, weather_tool):
-    """Factory to create a weather agent."""
-    def _create():
-        agent = create_agent(model=create_model(), tools=[weather_tool])
-        agent.name = "weather_agent"
-        agent.description = "Gets weather information for cities"
-        return agent
-    return _create
-
-
-@pytest.fixture
-def create_calculator_agent(create_model, calculate_tool):
-    """Factory to create a calculator agent."""
-    def _create():
-        agent = create_agent(model=create_model(), tools=[calculate_tool])
-        agent.name = "calculator_agent"
-        agent.description = "Performs mathematical calculations"
-        return agent
-    return _create
-
-
-@pytest.fixture
-def create_search_agent(create_model, search_tool):
-    """Factory to create a search agent."""
-    def _create():
-        agent = create_agent(model=create_model(), tools=[search_tool])
-        agent.name = "search_agent"
-        agent.description = "Searches for information"
-        return agent
-    return _create
-
-
-@pytest.fixture
-def create_translator_agent(create_model, translate_tool):
-    """Factory to create a translator agent."""
-    def _create():
-        agent = create_agent(model=create_model(), tools=[translate_tool])
-        agent.name = "translator_agent"
-        agent.description = "Translates text between languages"
-        return agent
-    return _create
