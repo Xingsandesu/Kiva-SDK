@@ -341,3 +341,111 @@ class TestKivaToolConversion:
 
         with pytest.raises(ValueError):
             kiva._to_tools(123)
+
+
+class TestKivaMaxIterations:
+    """Tests for max_iterations configuration at global, per-agent, and per-run levels."""
+
+    def test_global_max_iterations_default(self):
+        """Test that global max_iterations defaults to 3."""
+        kiva = Kiva(base_url="http://test", api_key="test", model="test")
+        assert kiva.max_iterations == 3
+
+    def test_global_max_iterations_custom(self):
+        """Test setting custom global max_iterations."""
+        kiva = Kiva(
+            base_url="http://test",
+            api_key="test",
+            model="test",
+            max_iterations=5,
+        )
+        assert kiva.max_iterations == 5
+
+    def test_agent_max_iterations_default_none(self):
+        """Test that agent max_iterations defaults to None (uses global)."""
+        kiva = Kiva(base_url="http://test", api_key="test", model="test")
+
+        @kiva.agent("test", "Test agent")
+        def test_func() -> str:
+            """Test function."""
+            return "test"
+
+        assert kiva._agents[0].max_iterations is None
+
+    def test_agent_max_iterations_custom(self):
+        """Test setting per-agent max_iterations."""
+        kiva = Kiva(base_url="http://test", api_key="test", model="test")
+
+        @kiva.agent("test", "Test agent", max_iterations=10)
+        def test_func() -> str:
+            """Test function."""
+            return "test"
+
+        assert kiva._agents[0].max_iterations == 10
+
+    def test_add_agent_max_iterations(self):
+        """Test add_agent method with max_iterations."""
+        kiva = Kiva(base_url="http://test", api_key="test", model="test")
+
+        def test_func() -> str:
+            """Test function."""
+            return "test"
+
+        kiva.add_agent("test", "Test agent", [test_func], max_iterations=7)
+        assert kiva._agents[0].max_iterations == 7
+
+    def test_add_agent_max_iterations_default(self):
+        """Test add_agent method without max_iterations uses None."""
+        kiva = Kiva(base_url="http://test", api_key="test", model="test")
+
+        def test_func() -> str:
+            """Test function."""
+            return "test"
+
+        kiva.add_agent("test", "Test agent", [test_func])
+        assert kiva._agents[0].max_iterations is None
+
+    @given(
+        global_max=st.integers(min_value=1, max_value=100),
+        agent_max=st.integers(min_value=1, max_value=100),
+    )
+    @settings(max_examples=50)
+    def test_max_iterations_values_preserved(self, global_max: int, agent_max: int):
+        """Test that max_iterations values are preserved correctly."""
+        kiva = Kiva(
+            base_url="http://test",
+            api_key="test",
+            model="test",
+            max_iterations=global_max,
+        )
+
+        @kiva.agent("test", "Test agent", max_iterations=agent_max)
+        def test_func() -> str:
+            """Test function."""
+            return "test"
+
+        assert kiva.max_iterations == global_max
+        assert kiva._agents[0].max_iterations == agent_max
+
+    def test_multiple_agents_different_max_iterations(self):
+        """Test multiple agents with different max_iterations."""
+        kiva = Kiva(base_url="http://test", api_key="test", model="test")
+
+        @kiva.agent("agent1", "Agent 1", max_iterations=5)
+        def agent1() -> str:
+            """Agent 1."""
+            return "1"
+
+        @kiva.agent("agent2", "Agent 2")  # Uses default (None)
+        def agent2() -> str:
+            """Agent 2."""
+            return "2"
+
+        @kiva.agent("agent3", "Agent 3", max_iterations=15)
+        def agent3() -> str:
+            """Agent 3."""
+            return "3"
+
+        assert kiva._agents[0].max_iterations == 5
+        assert kiva._agents[1].max_iterations is None
+        assert kiva._agents[2].max_iterations == 15

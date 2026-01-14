@@ -98,11 +98,14 @@ class Agent:
         name: Unique identifier for the agent.
         description: Human-readable description of the agent's capabilities.
         tools: List of LangChain tools available to the agent.
+        max_iterations: Per-agent maximum iterations for verification retry.
+            If None, uses the global default from Kiva instance.
     """
 
     name: str
     description: str
     tools: list
+    max_iterations: int | None = None
     _compiled: object = field(default=None, repr=False)
 
 
@@ -117,12 +120,15 @@ class Kiva:
         api_key: Authentication key for the API.
         model: Model identifier (e.g., "gpt-4o", "gpt-3.5-turbo").
         temperature: Sampling temperature for model responses. Defaults to 0.7.
+        max_iterations: Global maximum iterations for verification retry.
+            Defaults to 3. Can be overridden per-agent or per-run.
 
     Example:
         >>> kiva = Kiva(
         ...     base_url="https://api.openai.com/v1",
         ...     api_key="sk-...",
         ...     model="gpt-4o",
+        ...     max_iterations=5,  # Global default
         ... )
         >>> @kiva.agent("greeter", "Greets users")
         ... def greet(name: str) -> str:
@@ -137,12 +143,14 @@ class Kiva:
         api_key: str,
         model: str,
         temperature: float = 0.7,
+        max_iterations: int = 3,
     ):
         """Initialize the Kiva client."""
         self.base_url = base_url
         self.api_key = api_key
         self.model = model
         self.temperature = temperature
+        self.max_iterations = max_iterations
         self._agents: list[Agent] = []
         self._verifiers: list[RegisteredVerifier] = []
 
@@ -187,7 +195,12 @@ class Kiva:
         else:
             raise ValueError(f"Cannot convert {type(obj)} to tools")
 
-    def agent(self, name: str, description: str) -> Callable:
+    def agent(
+        self,
+        name: str,
+        description: str,
+        max_iterations: int | None = None,
+    ) -> Callable:
         """Decorator to register an agent.
 
         Can decorate either a single function (becomes a single-tool agent)
@@ -196,6 +209,8 @@ class Kiva:
         Args:
             name: Unique identifier for the agent.
             description: Human-readable description of the agent's purpose.
+            max_iterations: Per-agent maximum iterations for verification retry.
+                If None, uses the global default from Kiva instance.
 
         Returns:
             Decorator function that registers the agent.
@@ -215,11 +230,23 @@ class Kiva:
                     def add(self, a: int, b: int) -> int:
                         '''Add two numbers.'''
                         return a + b
+
+            Agent with custom max_iterations::
+
+                @kiva.agent("complex", "Complex task", max_iterations=5)
+                def complex_task(query: str) -> str:
+                    '''Handle complex queries.'''
+                    return query
         """
 
         def decorator(obj):
             tools = self._to_tools(obj)
-            self._agents.append(Agent(name=name, description=description, tools=tools))
+            self._agents.append(Agent(
+                name=name,
+                description=description,
+                tools=tools,
+                max_iterations=max_iterations,
+            ))
             return obj
 
         return decorator
@@ -304,7 +331,13 @@ class Kiva:
         """
         return sorted(self._verifiers, key=lambda v: v.priority, reverse=True)
 
-    def add_agent(self, name: str, description: str, tools: list) -> "Kiva":
+    def add_agent(
+        self,
+        name: str,
+        description: str,
+        tools: list,
+        max_iterations: int | None = None,
+    ) -> "Kiva":
         """Add an agent with an explicit tools list.
 
         Alternative to the decorator approach for programmatic agent registration.
@@ -313,15 +346,23 @@ class Kiva:
             name: Unique identifier for the agent.
             description: Human-readable description of the agent's purpose.
             tools: List of functions or LangChain tools.
+            max_iterations: Per-agent maximum iterations for verification retry.
+                If None, uses the global default from Kiva instance.
 
         Returns:
             Self for method chaining.
 
         Example:
             >>> kiva.add_agent("math", "Does math", [add_func, subtract_func])
+            >>> kiva.add_agent("complex", "Complex task", [task_func], max_iterations=5)
         """
         converted = self._to_tools(tools)
-        self._agents.append(Agent(name=name, description=description, tools=converted))
+        self._agents.append(Agent(
+            name=name,
+            description=description,
+            tools=converted,
+            max_iterations=max_iterations,
+        ))
         return self
 
     def include_router(self, router: "AgentRouter", prefix: str = "") -> "Kiva":
@@ -346,7 +387,12 @@ class Kiva:
             name = f"{prefix}_{agent_def.name}" if prefix else agent_def.name
             tools = self._to_tools(agent_def.obj)
             self._agents.append(
-                Agent(name=name, description=agent_def.description, tools=tools)
+                Agent(
+                    name=name,
+                    description=agent_def.description,
+                    tools=tools,
+                    max_iterations=getattr(agent_def, "max_iterations", None),
+                )
             )
         return self
 
@@ -360,17 +406,27 @@ class Kiva:
             built.append(agent)
         return built
 
-    async def run_async(self, prompt: str, console: bool = True) -> str | None:
+    async def run_async(
+        self,
+        prompt: str,
+        console: bool = True,
+        max_iterations: int | None = None,
+    ) -> str | None:
         """Run orchestration asynchronously.
 
         Args:
             prompt: The task or question to process.
             console: Whether to display rich console output. Defaults to True.
+            max_iterations: Maximum iterations for verification retry.
+                If None, uses the global default from Kiva instance.
 
         Returns:
             Final result string, or None if no result was produced.
         """
         agents = self._build_agents()
+        effective_max_iterations = (
+            max_iterations if max_iterations is not None else self.max_iterations
+        )
 
         if console:
             from kiva.console import run_with_console
@@ -381,6 +437,8 @@ class Kiva:
                 base_url=self.base_url,
                 api_key=self.api_key,
                 model_name=self.model,
+                max_iterations=effective_max_iterations,
+                custom_verifiers=self._verifiers,
             )
         else:
             from kiva.run import run
@@ -392,12 +450,19 @@ class Kiva:
                 base_url=self.base_url,
                 api_key=self.api_key,
                 model_name=self.model,
+                max_iterations=effective_max_iterations,
+                custom_verifiers=self._verifiers,
             ):
                 if event.type == "final_result":
                     result = event.data.get("result")
             return result
 
-    def run(self, prompt: str, console: bool = True) -> str | None:
+    def run(
+        self,
+        prompt: str,
+        console: bool = True,
+        max_iterations: int | None = None,
+    ) -> str | None:
         """Run orchestration synchronously.
 
         Convenience wrapper around run_async for synchronous contexts.
@@ -405,10 +470,14 @@ class Kiva:
         Args:
             prompt: The task or question to process.
             console: Whether to display rich console output. Defaults to True.
+            max_iterations: Maximum iterations for verification retry.
+                If None, uses the global default from Kiva instance.
 
         Returns:
             Final result string, or None if no result was produced.
         """
         import asyncio
 
-        return asyncio.run(self.run_async(prompt, console=console))
+        return asyncio.run(
+            self.run_async(prompt, console=console, max_iterations=max_iterations)
+        )
