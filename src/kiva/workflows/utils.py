@@ -2,7 +2,8 @@
 
 This module provides common helper functions used across different workflow
 types (router, supervisor, parliament) to avoid code duplication and ensure
-consistent behavior. Includes support for agent instance management.
+consistent behavior. Includes support for agent instance management and
+inter-agent message validation.
 
 Functions:
     get_agent_by_id: Locate an agent instance by its identifier.
@@ -14,6 +15,8 @@ Functions:
     execute_agent_instance: Run an agent instance with isolated context.
     make_error_result: Create standardized error result dictionaries.
     create_instance_context: Create isolated context for an agent instance.
+    create_agent_message: Create and validate an inter-agent message.
+    validate_and_send_message: Validate a message before sending between agents.
 """
 
 import logging
@@ -24,6 +27,11 @@ from typing import Any
 from langgraph.config import get_stream_writer
 
 from kiva.exceptions import wrap_agent_error
+from kiva.verification import (
+    AgentMessage,
+    InterAgentMessageValidator,
+    MessageValidationResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -326,3 +334,133 @@ async def make_error_result(
         "result": None,
         "error": error_msg,
     }
+
+
+# Inter-agent message validation utilities
+_message_validator = InterAgentMessageValidator()
+
+
+def create_agent_message(
+    sender_id: str,
+    receiver_id: str,
+    content: Any,
+    message_type: str,
+    timestamp: float | None = None,
+) -> tuple[AgentMessage | None, MessageValidationResult]:
+    """Create and validate an inter-agent message.
+
+    Creates an AgentMessage after validating the data against the Pydantic
+    schema. If validation fails, returns None with error details.
+
+    Args:
+        sender_id: Identifier of the sending agent.
+        receiver_id: Identifier of the receiving agent.
+        content: Message content (can be any type).
+        message_type: Type/category of the message.
+        timestamp: Unix timestamp. Defaults to current time if not provided.
+
+    Returns:
+        Tuple of (AgentMessage or None, MessageValidationResult).
+        If validation passes, returns the created message and a valid result.
+        If validation fails, returns None and the error result.
+
+    Example:
+        >>> message, result = create_agent_message(
+        ...     sender_id="agent_1",
+        ...     receiver_id="agent_2",
+        ...     content={"data": "test"},
+        ...     message_type="task_result",
+        ... )
+        >>> if result.is_valid:
+        ...     print(f"Message created: {message.sender_id} -> {message.receiver_id}")
+
+    Validates: Requirements 4.2, 4.3, 4.4
+    """
+    if timestamp is None:
+        timestamp = time.time()
+
+    message_data = {
+        "sender_id": sender_id,
+        "receiver_id": receiver_id,
+        "content": content,
+        "message_type": message_type,
+        "timestamp": timestamp,
+    }
+
+    return _message_validator.validate_and_create(message_data)
+
+
+def validate_and_send_message(
+    sender_id: str,
+    receiver_id: str,
+    content: Any,
+    message_type: str,
+    timestamp: float | None = None,
+) -> tuple[AgentMessage | None, MessageValidationResult]:
+    """Validate a message before sending between agents.
+
+    This function validates the message data against the AgentMessage schema
+    before creating the message. If validation fails, it returns detailed
+    field-level error information in the rejection context.
+
+    Args:
+        sender_id: Identifier of the sending agent.
+        receiver_id: Identifier of the receiving agent.
+        content: Message content (can be any type).
+        message_type: Type/category of the message.
+        timestamp: Unix timestamp. Defaults to current time if not provided.
+
+    Returns:
+        Tuple of (AgentMessage or None, MessageValidationResult).
+        The MessageValidationResult contains:
+        - is_valid: Whether the message passed validation
+        - field_errors: Dict of field names to error messages
+        - rejection_reason: Human-readable rejection reason
+        - expected_format: Description of expected message format
+
+    Example:
+        >>> message, result = validate_and_send_message(
+        ...     sender_id="agent_1",
+        ...     receiver_id="agent_2",
+        ...     content="Hello",
+        ...     message_type="greeting",
+        ... )
+        >>> if not result.is_valid:
+        ...     print(f"Validation failed: {result.rejection_reason}")
+        ...     for field, error in result.field_errors.items():
+        ...         print(f"  {field}: {error}")
+    """
+    return create_agent_message(
+        sender_id=sender_id,
+        receiver_id=receiver_id,
+        content=content,
+        message_type=message_type,
+        timestamp=timestamp,
+    )
+
+
+def validate_message_data(message_data: dict[str, Any]) -> MessageValidationResult:
+    """Validate raw message data against the AgentMessage schema.
+
+    This is a lower-level function that validates a dictionary of message
+    data without creating an AgentMessage object.
+
+    Args:
+        message_data: Dictionary containing the message data to validate.
+
+    Returns:
+        MessageValidationResult with validation status and error details.
+
+    Example:
+        >>> result = validate_message_data({
+        ...     "sender_id": "agent_1",
+        ...     "receiver_id": "agent_2",
+        ...     "content": "test",
+        ...     "message_type": "data",
+        ...     "timestamp": 1234567890.0,
+        ... })
+        >>> assert result.is_valid is True
+
+    Validates: Requirements 4.2, 4.3, 4.4
+    """
+    return _message_validator.validate(message_data)

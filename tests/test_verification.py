@@ -3332,3 +3332,532 @@ class TestVerificationEventsProperty:
 
         # Verify the function exists and is callable
         assert callable(worker_retry)
+
+
+class TestInterAgentMessageValidationProperty:
+    """Property-based tests for Inter-Agent Message Validation.
+
+    Feature: output-verification-agent
+    """
+
+    @given(
+        sender_id=st.text(min_size=1, max_size=50).filter(lambda x: x.strip()),
+        receiver_id=st.text(min_size=1, max_size=50).filter(lambda x: x.strip()),
+        content=st.one_of(
+            st.text(max_size=200),
+            st.dictionaries(
+                keys=st.text(min_size=1, max_size=20).filter(lambda x: x.strip()),
+                values=st.text(max_size=50),
+                max_size=5,
+            ),
+            st.lists(st.integers(), max_size=5),
+            st.none(),
+        ),
+        message_type=st.text(min_size=1, max_size=30).filter(lambda x: x.strip()),
+        timestamp=st.floats(min_value=0.0, max_value=1e12, allow_nan=False),
+    )
+    @settings(max_examples=100)
+    def test_valid_message_passes_validation(
+        self,
+        sender_id: str,
+        receiver_id: str,
+        content,
+        message_type: str,
+        timestamp: float,
+    ):
+        """Valid messages pass validation.
+
+        For any message that conforms to the AgentMessage Pydantic schema,
+        the validation SHALL return is_valid=True with no field errors.
+
+        Feature: output-verification-agent
+        """
+        from kiva.verification import validate_agent_message
+
+        message_data = {
+            "sender_id": sender_id,
+            "receiver_id": receiver_id,
+            "content": content,
+            "message_type": message_type,
+            "timestamp": timestamp,
+        }
+
+        result = validate_agent_message(message_data)
+
+        assert result.is_valid is True
+        assert result.field_errors == {}
+        assert result.rejection_reason is None
+        assert result.expected_format is not None
+
+    @given(
+        # Generate message data with missing required fields
+        missing_fields=st.lists(
+            st.sampled_from(["sender_id", "receiver_id", "message_type", "timestamp"]),
+            min_size=1,
+            max_size=4,
+            unique=True,
+        ),
+    )
+    @settings(max_examples=100)
+    def test_missing_required_fields_fails_validation(
+        self,
+        missing_fields: list[str],
+    ):
+        """Missing required fields fail validation with field errors.
+
+        For any message missing required fields, the validation SHALL return
+        is_valid=False and SHALL include field-level error details for each
+        missing field.
+
+        Feature: output-verification-agent
+        """
+        from kiva.verification import validate_agent_message
+
+        # Create complete message data
+        complete_data = {
+            "sender_id": "agent_1",
+            "receiver_id": "agent_2",
+            "content": "test content",
+            "message_type": "task_result",
+            "timestamp": 1234567890.0,
+        }
+
+        # Remove the specified fields
+        message_data = {k: v for k, v in complete_data.items() if k not in missing_fields}
+
+        result = validate_agent_message(message_data)
+
+        assert result.is_valid is False
+        assert result.rejection_reason is not None
+        assert "error" in result.rejection_reason.lower()
+        assert len(result.field_errors) > 0
+
+        # Each missing field should have an error
+        for field in missing_fields:
+            assert field in result.field_errors, (
+                f"Missing field '{field}' should have an error in field_errors"
+            )
+
+    @given(
+        sender_id=st.text(min_size=1, max_size=50).filter(lambda x: x.strip()),
+        receiver_id=st.text(min_size=1, max_size=50).filter(lambda x: x.strip()),
+        message_type=st.text(min_size=1, max_size=30).filter(lambda x: x.strip()),
+        # Generate invalid timestamp values
+        invalid_timestamp=st.one_of(
+            st.text(min_size=1, max_size=20).filter(
+                lambda x: x.strip() and not x.strip().lstrip("-").replace(".", "", 1).isdigit()
+            ),
+            st.lists(st.integers(), min_size=1, max_size=3),
+        ),
+    )
+    @settings(max_examples=100)
+    def test_invalid_field_type_fails_validation(
+        self,
+        sender_id: str,
+        receiver_id: str,
+        message_type: str,
+        invalid_timestamp,
+    ):
+        """Invalid field types fail validation with field errors.
+
+        For any message with invalid field types, the validation SHALL return
+        is_valid=False and SHALL include field-level error details explaining
+        the expected format.
+
+        Feature: output-verification-agent
+        """
+        from kiva.verification import validate_agent_message
+
+        message_data = {
+            "sender_id": sender_id,
+            "receiver_id": receiver_id,
+            "content": "test content",
+            "message_type": message_type,
+            "timestamp": invalid_timestamp,  # Invalid type
+        }
+
+        result = validate_agent_message(message_data)
+
+        assert result.is_valid is False
+        assert result.rejection_reason is not None
+        assert len(result.field_errors) > 0
+        assert "timestamp" in result.field_errors
+        assert result.expected_format is not None
+
+    @given(
+        sender_id=st.text(min_size=1, max_size=50).filter(lambda x: x.strip()),
+        receiver_id=st.text(min_size=1, max_size=50).filter(lambda x: x.strip()),
+        content=st.text(max_size=200),
+        message_type=st.text(min_size=1, max_size=30).filter(lambda x: x.strip()),
+        timestamp=st.floats(min_value=0.0, max_value=1e12, allow_nan=False),
+    )
+    @settings(max_examples=100)
+    def test_validation_result_includes_expected_format(
+        self,
+        sender_id: str,
+        receiver_id: str,
+        content: str,
+        message_type: str,
+        timestamp: float,
+    ):
+        """Validation result includes expected format description.
+
+        For any validation result (pass or fail), the result SHALL include
+        a description of the expected message format.
+
+        Feature: output-verification-agent
+        """
+        from kiva.verification import validate_agent_message
+
+        # Test with valid message
+        valid_message = {
+            "sender_id": sender_id,
+            "receiver_id": receiver_id,
+            "content": content,
+            "message_type": message_type,
+            "timestamp": timestamp,
+        }
+        valid_result = validate_agent_message(valid_message)
+        assert valid_result.expected_format is not None
+        assert "sender_id" in valid_result.expected_format
+        assert "receiver_id" in valid_result.expected_format
+
+        # Test with invalid message
+        invalid_message = {"sender_id": sender_id}  # Missing fields
+        invalid_result = validate_agent_message(invalid_message)
+        assert invalid_result.expected_format is not None
+        assert "sender_id" in invalid_result.expected_format
+
+    @given(
+        sender_id=st.text(min_size=1, max_size=50).filter(lambda x: x.strip()),
+        receiver_id=st.text(min_size=1, max_size=50).filter(lambda x: x.strip()),
+        content=st.one_of(
+            st.text(max_size=200),
+            st.dictionaries(
+                keys=st.text(min_size=1, max_size=20).filter(lambda x: x.strip()),
+                values=st.text(max_size=50),
+                max_size=5,
+            ),
+            st.none(),
+        ),
+        message_type=st.text(min_size=1, max_size=30).filter(lambda x: x.strip()),
+        timestamp=st.floats(min_value=0.0, max_value=1e12, allow_nan=False),
+    )
+    @settings(max_examples=100)
+    def test_inter_agent_message_validator_class(
+        self,
+        sender_id: str,
+        receiver_id: str,
+        content,
+        message_type: str,
+        timestamp: float,
+    ):
+        """InterAgentMessageValidator class validates correctly.
+
+        The InterAgentMessageValidator class SHALL validate messages against
+        the AgentMessage schema and return proper validation results.
+
+        Feature: output-verification-agent
+        """
+        from kiva.verification import InterAgentMessageValidator
+
+        validator = InterAgentMessageValidator()
+
+        message_data = {
+            "sender_id": sender_id,
+            "receiver_id": receiver_id,
+            "content": content,
+            "message_type": message_type,
+            "timestamp": timestamp,
+        }
+
+        result = validator.validate(message_data)
+
+        assert result.is_valid is True
+        assert result.field_errors == {}
+
+    @given(
+        sender_id=st.text(min_size=1, max_size=50).filter(lambda x: x.strip()),
+        receiver_id=st.text(min_size=1, max_size=50).filter(lambda x: x.strip()),
+        content=st.text(max_size=200),
+        message_type=st.text(min_size=1, max_size=30).filter(lambda x: x.strip()),
+        timestamp=st.floats(min_value=0.0, max_value=1e12, allow_nan=False),
+    )
+    @settings(max_examples=100)
+    def test_validate_and_create_returns_message_on_success(
+        self,
+        sender_id: str,
+        receiver_id: str,
+        content: str,
+        message_type: str,
+        timestamp: float,
+    ):
+        """validate_and_create returns AgentMessage on success.
+
+        When validation passes, validate_and_create SHALL return a valid
+        AgentMessage object along with a successful validation result.
+
+        Feature: output-verification-agent
+        """
+        from kiva.verification import AgentMessage, InterAgentMessageValidator
+
+        validator = InterAgentMessageValidator()
+
+        message_data = {
+            "sender_id": sender_id,
+            "receiver_id": receiver_id,
+            "content": content,
+            "message_type": message_type,
+            "timestamp": timestamp,
+        }
+
+        message, result = validator.validate_and_create(message_data)
+
+        assert result.is_valid is True
+        assert message is not None
+        assert isinstance(message, AgentMessage)
+        assert message.sender_id == sender_id
+        assert message.receiver_id == receiver_id
+        assert message.content == content
+        assert message.message_type == message_type
+        assert message.timestamp == timestamp
+
+    @given(
+        missing_fields=st.lists(
+            st.sampled_from(["sender_id", "receiver_id", "message_type", "timestamp"]),
+            min_size=1,
+            max_size=4,
+            unique=True,
+        ),
+    )
+    @settings(max_examples=100)
+    def test_validate_and_create_returns_none_on_failure(
+        self,
+        missing_fields: list[str],
+    ):
+        """validate_and_create returns None on validation failure.
+
+        When validation fails, validate_and_create SHALL return None for the
+        message and a failed validation result with field errors.
+
+        Feature: output-verification-agent
+        """
+        from kiva.verification import InterAgentMessageValidator
+
+        validator = InterAgentMessageValidator()
+
+        # Create incomplete message data
+        complete_data = {
+            "sender_id": "agent_1",
+            "receiver_id": "agent_2",
+            "content": "test",
+            "message_type": "task_result",
+            "timestamp": 1234567890.0,
+        }
+        message_data = {k: v for k, v in complete_data.items() if k not in missing_fields}
+
+        message, result = validator.validate_and_create(message_data)
+
+        assert result.is_valid is False
+        assert message is None
+        assert len(result.field_errors) > 0
+
+    @given(
+        sender_id=st.text(min_size=1, max_size=50).filter(lambda x: x.strip()),
+        receiver_id=st.text(min_size=1, max_size=50).filter(lambda x: x.strip()),
+        content=st.text(max_size=200),
+        message_type=st.text(min_size=1, max_size=30).filter(lambda x: x.strip()),
+    )
+    @settings(max_examples=100)
+    def test_workflows_utils_create_agent_message(
+        self,
+        sender_id: str,
+        receiver_id: str,
+        content: str,
+        message_type: str,
+    ):
+        """workflows/utils create_agent_message validates correctly.
+
+        The create_agent_message utility function SHALL validate messages
+        and return proper results.
+
+        Feature: output-verification-agent
+        """
+        from kiva.workflows.utils import create_agent_message
+
+        message, result = create_agent_message(
+            sender_id=sender_id,
+            receiver_id=receiver_id,
+            content=content,
+            message_type=message_type,
+            # timestamp defaults to current time
+        )
+
+        assert result.is_valid is True
+        assert message is not None
+        assert message.sender_id == sender_id
+        assert message.receiver_id == receiver_id
+        assert message.content == content
+        assert message.message_type == message_type
+        assert message.timestamp > 0  # Should have a valid timestamp
+
+    @given(
+        sender_id=st.text(min_size=1, max_size=50).filter(lambda x: x.strip()),
+        receiver_id=st.text(min_size=1, max_size=50).filter(lambda x: x.strip()),
+        content=st.text(max_size=200),
+        message_type=st.text(min_size=1, max_size=30).filter(lambda x: x.strip()),
+    )
+    @settings(max_examples=100)
+    def test_workflows_utils_validate_and_send_message(
+        self,
+        sender_id: str,
+        receiver_id: str,
+        content: str,
+        message_type: str,
+    ):
+        """workflows/utils validate_and_send_message validates correctly.
+
+        The validate_and_send_message utility function SHALL validate messages
+        before sending and return proper results.
+
+        Feature: output-verification-agent
+        """
+        from kiva.workflows.utils import validate_and_send_message
+
+        message, result = validate_and_send_message(
+            sender_id=sender_id,
+            receiver_id=receiver_id,
+            content=content,
+            message_type=message_type,
+        )
+
+        assert result.is_valid is True
+        assert message is not None
+        assert message.sender_id == sender_id
+        assert message.receiver_id == receiver_id
+
+    @given(
+        sender_id=st.text(min_size=1, max_size=50).filter(lambda x: x.strip()),
+        receiver_id=st.text(min_size=1, max_size=50).filter(lambda x: x.strip()),
+        content=st.text(max_size=200),
+        message_type=st.text(min_size=1, max_size=30).filter(lambda x: x.strip()),
+        timestamp=st.floats(min_value=0.0, max_value=1e12, allow_nan=False),
+    )
+    @settings(max_examples=100)
+    def test_workflows_utils_validate_message_data(
+        self,
+        sender_id: str,
+        receiver_id: str,
+        content: str,
+        message_type: str,
+        timestamp: float,
+    ):
+        """workflows/utils validate_message_data validates correctly.
+
+        The validate_message_data utility function SHALL validate raw message
+        data against the AgentMessage schema.
+
+        Feature: output-verification-agent
+        """
+        from kiva.workflows.utils import validate_message_data
+
+        message_data = {
+            "sender_id": sender_id,
+            "receiver_id": receiver_id,
+            "content": content,
+            "message_type": message_type,
+            "timestamp": timestamp,
+        }
+
+        result = validate_message_data(message_data)
+
+        assert result.is_valid is True
+        assert result.field_errors == {}
+
+    @given(
+        missing_fields=st.lists(
+            st.sampled_from(["sender_id", "receiver_id", "message_type", "timestamp"]),
+            min_size=1,
+            max_size=4,
+            unique=True,
+        ),
+    )
+    @settings(max_examples=100)
+    def test_workflows_utils_validate_message_data_fails_on_invalid(
+        self,
+        missing_fields: list[str],
+    ):
+        """workflows/utils validate_message_data fails on invalid data.
+
+        The validate_message_data utility function SHALL return validation
+        failure with field errors when data is invalid.
+
+        Feature: output-verification-agent
+        """
+        from kiva.workflows.utils import validate_message_data
+
+        # Create incomplete message data
+        complete_data = {
+            "sender_id": "agent_1",
+            "receiver_id": "agent_2",
+            "content": "test",
+            "message_type": "task_result",
+            "timestamp": 1234567890.0,
+        }
+        message_data = {k: v for k, v in complete_data.items() if k not in missing_fields}
+
+        result = validate_message_data(message_data)
+
+        assert result.is_valid is False
+        assert len(result.field_errors) > 0
+        for field in missing_fields:
+            assert field in result.field_errors
+
+
+class TestMessageValidationResultModel:
+    """Unit tests for MessageValidationResult model."""
+
+    def test_create_valid_result(self):
+        """Test creating a valid MessageValidationResult."""
+        from kiva.verification import MessageValidationResult
+
+        result = MessageValidationResult(
+            is_valid=True,
+            expected_format="AgentMessage with required fields",
+        )
+        assert result.is_valid is True
+        assert result.field_errors == {}
+        assert result.rejection_reason is None
+        assert result.expected_format == "AgentMessage with required fields"
+
+    def test_create_invalid_result_with_errors(self):
+        """Test creating an invalid MessageValidationResult with field errors."""
+        from kiva.verification import MessageValidationResult
+
+        result = MessageValidationResult(
+            is_valid=False,
+            field_errors={"sender_id": "Field required", "timestamp": "Invalid type"},
+            rejection_reason="Message validation failed: 2 error(s)",
+            expected_format="AgentMessage with required fields",
+        )
+        assert result.is_valid is False
+        assert len(result.field_errors) == 2
+        assert "sender_id" in result.field_errors
+        assert "timestamp" in result.field_errors
+        assert result.rejection_reason == "Message validation failed: 2 error(s)"
+
+    def test_model_dump(self):
+        """Test serialization of MessageValidationResult."""
+        from kiva.verification import MessageValidationResult
+
+        result = MessageValidationResult(
+            is_valid=False,
+            field_errors={"sender_id": "Field required"},
+            rejection_reason="Validation failed",
+            expected_format="AgentMessage",
+        )
+        dumped = result.model_dump()
+        assert dumped["is_valid"] is False
+        assert dumped["field_errors"] == {"sender_id": "Field required"}
+        assert dumped["rejection_reason"] == "Validation failed"
+        assert dumped["expected_format"] == "AgentMessage"

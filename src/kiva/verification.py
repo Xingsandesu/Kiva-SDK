@@ -126,6 +126,139 @@ class AgentMessage(BaseModel):
     timestamp: float
 
 
+class MessageValidationResult(BaseModel):
+    """Result of inter-agent message validation.
+
+    Contains the outcome of validating an agent message against the
+    AgentMessage Pydantic schema.
+
+    Attributes:
+        is_valid: Whether the message is valid.
+        field_errors: Dictionary of field-level validation errors.
+        rejection_reason: Human-readable rejection reason if invalid.
+        expected_format: Description of the expected message format.
+
+    Example:
+        >>> result = MessageValidationResult(
+        ...     is_valid=False,
+        ...     field_errors={"sender_id": "Field required"},
+        ...     rejection_reason="Message validation failed: 1 error(s)",
+        ...     expected_format="AgentMessage with sender_id, receiver_id, ...",
+        ... )
+    """
+
+    is_valid: bool
+    field_errors: dict[str, str] = Field(default_factory=dict)
+    rejection_reason: str | None = None
+    expected_format: str | None = None
+
+
+def validate_agent_message(message_data: dict[str, Any]) -> MessageValidationResult:
+    """Validate a message against the AgentMessage Pydantic schema.
+
+    This function validates inter-agent communication messages to ensure
+    data integrity throughout the workflow. If validation fails, it returns
+    detailed field-level error information.
+
+    Args:
+        message_data: Dictionary containing the message data to validate.
+
+    Returns:
+        MessageValidationResult with validation status and error details.
+
+    Example:
+        >>> result = validate_agent_message({
+        ...     "sender_id": "agent_1",
+        ...     "receiver_id": "agent_2",
+        ...     "content": "Hello",
+        ...     "message_type": "greeting",
+        ...     "timestamp": 1234567890.0,
+        ... })
+        >>> assert result.is_valid is True
+
+        >>> result = validate_agent_message({"sender_id": "agent_1"})
+        >>> assert result.is_valid is False
+        >>> assert "receiver_id" in result.field_errors
+    """
+    expected_format = (
+        "AgentMessage with required fields: sender_id (str), receiver_id (str), "
+        "content (any), message_type (str), timestamp (float)"
+    )
+
+    try:
+        AgentMessage.model_validate(message_data)
+        return MessageValidationResult(
+            is_valid=True,
+            expected_format=expected_format,
+        )
+    except ValidationError as e:
+        field_errors: dict[str, str] = {}
+        for error in e.errors():
+            field_path = ".".join(str(loc) for loc in error["loc"])
+            field_errors[field_path] = error["msg"]
+
+        err_count = len(e.errors())
+        return MessageValidationResult(
+            is_valid=False,
+            field_errors=field_errors,
+            rejection_reason=f"Message validation failed: {err_count} error(s)",
+            expected_format=expected_format,
+        )
+
+
+class InterAgentMessageValidator:
+    """Validator for inter-agent communication messages.
+
+    Provides validation of messages sent between agents, ensuring they
+    conform to the AgentMessage Pydantic schema. When validation fails,
+    it triggers a rejection with context explaining the validation error.
+
+    This class implements Requirements 4.2, 4.3, 4.4 for inter-agent
+    communication validation.
+
+    Example:
+        >>> validator = InterAgentMessageValidator()
+        >>> result = validator.validate({
+        ...     "sender_id": "agent_1",
+        ...     "receiver_id": "agent_2",
+        ...     "content": {"data": "test"},
+        ...     "message_type": "task_result",
+        ...     "timestamp": 1234567890.0,
+        ... })
+        >>> assert result.is_valid is True
+    """
+
+    def validate(self, message_data: dict[str, Any]) -> MessageValidationResult:
+        """Validate a message against the AgentMessage schema.
+
+        Args:
+            message_data: Dictionary containing the message data.
+
+        Returns:
+            MessageValidationResult with validation status and error details.
+        """
+        return validate_agent_message(message_data)
+
+    def validate_and_create(
+        self, message_data: dict[str, Any]
+    ) -> tuple[AgentMessage | None, MessageValidationResult]:
+        """Validate and create an AgentMessage if valid.
+
+        Args:
+            message_data: Dictionary containing the message data.
+
+        Returns:
+            Tuple of (AgentMessage or None, MessageValidationResult).
+            If validation passes, returns the created message and a valid result.
+            If validation fails, returns None and the error result.
+        """
+        result = self.validate(message_data)
+        if result.is_valid:
+            message = AgentMessage.model_validate(message_data)
+            return message, result
+        return None, result
+
+
 @runtime_checkable
 class Verifier(Protocol):
     """Verifier protocol for custom verification rules.
