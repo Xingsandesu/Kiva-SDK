@@ -1,6 +1,6 @@
 [project]
 name = "kiva-sdk"
-version = "0.3.1"
+version = "0.3.2"
 description = "A multi-agent orchestration SDK for building intelligent workflows"
 readme = "README.md"
 license = {text = "MIT"}
