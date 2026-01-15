@@ -38,6 +38,8 @@ async def execute_instance_node(
     task = state.get("task", "")
     context = state.get("context", {})
     execution_id = state.get("execution_id", "")
+    worker_max_iterations = state.get("worker_max_iterations", 100)
+    max_retries = state.get("max_retries", 3)
 
     # Get agents from configurable or use empty list
     # Note: In Send-based execution, we need to pass agents via config
@@ -77,6 +79,8 @@ async def execute_instance_node(
         task=task,
         context=context,
         execution_id=execution_id,
+        worker_max_iterations=worker_max_iterations,
+        max_retries=max_retries,
     )
 
     emit_event(

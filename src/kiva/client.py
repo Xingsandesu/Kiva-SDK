@@ -245,12 +245,15 @@ class Kiva:
             built.append(agent)
         return built
 
-    async def run_async(self, prompt: str, console: bool = True) -> str | None:
+    async def run_async(
+        self, prompt: str, console: bool = True, worker_max_iterations: int = 25
+    ) -> str | None:
         """Run orchestration asynchronously.
 
         Args:
             prompt: The task or question to process.
             console: Whether to display rich console output. Defaults to True.
+            worker_max_iterations: Maximum iterations for worker agents. Defaults to 25.
 
         Returns:
             Final result string, or None if no result was produced.
@@ -266,6 +269,7 @@ class Kiva:
                 base_url=self.base_url,
                 api_key=self.api_key,
                 model_name=self.model,
+                worker_max_iterations=worker_max_iterations,
             )
         else:
             from kiva.run import run
@@ -277,12 +281,15 @@ class Kiva:
                 base_url=self.base_url,
                 api_key=self.api_key,
                 model_name=self.model,
+                worker_max_iterations=worker_max_iterations,
             ):
                 if event.type == "final_result":
                     result = event.data.get("result")
             return result
 
-    def run(self, prompt: str, console: bool = True) -> str | None:
+    def run(
+        self, prompt: str, console: bool = True, worker_max_iterations: int = 100
+    ) -> str | None:
         """Run orchestration synchronously.
 
         Convenience wrapper around run_async for synchronous contexts.
@@ -290,10 +297,16 @@ class Kiva:
         Args:
             prompt: The task or question to process.
             console: Whether to display rich console output. Defaults to True.
+            worker_max_iterations: Maximum iterations for worker agents.
+                Defaults to 100.
 
         Returns:
             Final result string, or None if no result was produced.
         """
         import asyncio
 
-        return asyncio.run(self.run_async(prompt, console=console))
+        return asyncio.run(
+            self.run_async(
+                prompt, console=console, worker_max_iterations=worker_max_iterations
+            )
+        )

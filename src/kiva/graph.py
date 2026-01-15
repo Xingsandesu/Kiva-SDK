@@ -98,6 +98,8 @@ def _route_with_instances(state: OrchestratorState) -> list[Send] | str:
                 model_name=state.get("model_name", "gpt-4o"),
                 api_key=state.get("api_key"),
                 base_url=state.get("base_url"),
+                worker_max_iterations=state.get("worker_max_iterations", 100),
+                max_retries=state.get("max_retries", 3),
             )
             sends.append(Send("execute_instance", instance_state))
 

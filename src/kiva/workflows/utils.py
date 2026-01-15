@@ -225,11 +225,15 @@ async def execute_agent_instance(
     task: str,
     context: dict,
     execution_id: str = "",
+    worker_max_iterations: int = 100,
+    max_retries: int = 3,
 ) -> dict[str, Any]:
     """Execute an agent instance with isolated context.
 
     Similar to execute_single_agent but includes instance-specific context
     and tracking for parallel execution scenarios.
+    Supports real-time streaming of worker agent state updates.
+    Implements retry logic with exponential backoff for resilience.
 
     Args:
         agent: The agent instance to invoke.
@@ -238,71 +242,161 @@ async def execute_agent_instance(
         task: The task/prompt to send to the agent.
         context: Instance-specific context/scratchpad.
         execution_id: Parent execution ID for correlation.
+        worker_max_iterations: Maximum iterations for the worker agent.
+        max_retries: Maximum number of retries on failure.
 
     Returns:
         Dictionary with instance_id, agent_id, result, context, and optional error.
     """
-    try:
-        emit_event(
-            {
-                "type": "instance_start",
-                "instance_id": instance_id,
-                "agent_id": agent_id,
-                "execution_id": execution_id,
-                "task": task,
-                "timestamp": time.time(),
-            }
-        )
+    import asyncio
 
-        # Include context in the task if available
-        task_with_context = task
-        if context.get("scratchpad"):
-            task_with_context = f"{task}\n\nContext from previous steps:\n" + "\n".join(
-                str(s) for s in context["scratchpad"]
+    # Try block for the entire execution including retries
+    last_error = None
+
+    for attempt in range(max_retries + 1):
+        try:
+            if attempt > 0:
+                emit_event(
+                    {
+                        "type": "instance_retry",
+                        "instance_id": instance_id,
+                        "agent_id": agent_id,
+                        "execution_id": execution_id,
+                        "attempt": attempt,
+                        "max_retries": max_retries,
+                        "error": str(last_error),
+                        "timestamp": time.time(),
+                    }
+                )
+                # Exponential backoff
+                await asyncio.sleep(min(2**attempt, 10))
+
+            emit_event(
+                {
+                    "type": "instance_start",
+                    "instance_id": instance_id,
+                    "agent_id": agent_id,
+                    "execution_id": execution_id,
+                    "task": task,
+                    "timestamp": time.time(),
+                }
             )
 
-        result = await agent.ainvoke(
-            {"messages": [{"role": "user", "content": task_with_context}]}
-        )
-        content = extract_content(result)
+            # Include context in the task if available
+            task_with_context = task
+            if context.get("scratchpad"):
+                task_with_context = (
+                    f"{task}\n\nContext from previous steps:\n"
+                    + "\n".join(str(s) for s in context["scratchpad"])
+                )
 
-        # Update context with result
-        updated_context = {
-            **context,
-            "last_result": content,
-            "completed_at": time.time(),
-        }
-        updated_context["scratchpad"].append({"task": task, "result": content})
+            input_data = {"messages": [{"role": "user", "content": task_with_context}]}
+            config = {"recursion_limit": worker_max_iterations}
 
-        emit_event(
-            {
-                "type": "instance_end",
+            result = None
+
+            # Try to stream updates if supported
+            if hasattr(agent, "astream"):
+                last_state = None
+                async for state_chunk in agent.astream(
+                    input_data, config=config, stream_mode="values"
+                ):
+                    last_state = state_chunk
+
+                    # Extract latest message to emit update event
+                    messages = state_chunk.get("messages", [])
+                    if messages:
+                        last_msg = messages[-1]
+                        # Avoid emitting the initial user message if possible,
+                        # or just emit everything. The consumer can filter.
+
+                        emit_event({
+                            "type": "worker_state_update",
+                            "instance_id": instance_id,
+                            "agent_id": agent_id,
+                            "execution_id": execution_id,
+                            "data": {
+                                "role": getattr(last_msg, "type", "unknown"),
+                                "content": getattr(last_msg, "content", str(last_msg)),
+                                "tool_calls": getattr(last_msg, "tool_calls", []),
+                                "additional_kwargs": getattr(
+                                    last_msg, "additional_kwargs", {}
+                                ),
+                            },
+                            "timestamp": time.time()
+                        })
+                result = last_state
+            else:
+                result = await agent.ainvoke(input_data, config=config)
+
+            content = extract_content(result)
+
+            # Update context with result
+            updated_context = {
+                **context,
+                "last_result": content,
+                "completed_at": time.time(),
+            }
+            updated_context["scratchpad"].append({"task": task, "result": content})
+
+            emit_event(
+                {
+                    "type": "instance_end",
+                    "instance_id": instance_id,
+                    "agent_id": agent_id,
+                    "execution_id": execution_id,
+                    "result": content,
+                    "timestamp": time.time(),
+                }
+            )
+
+            return {
+                "instance_id": instance_id,
+                "agent_id": agent_id,
+                "result": content,
+                "context": updated_context,
+            }
+
+        except Exception as e:
+            last_error = e
+            # Only continue loop if we have retries left
+            if attempt < max_retries:
+                logger.warning(
+                    f"Agent {agent_id} failed attempt {attempt+1}/{max_retries+1}: {e}"
+                )
+                continue
+
+            # If we're here, we've exhausted retries
+            error = wrap_agent_error(e, agent_id, task)
+
+            # Emit error event with details for console=False support
+            emit_event({
+                "type": "instance_error",
                 "instance_id": instance_id,
                 "agent_id": agent_id,
                 "execution_id": execution_id,
-                "result": content,
-                "timestamp": time.time(),
+                "error": str(error),
+                "timestamp": time.time()
+            })
+
+            return {
+                "instance_id": instance_id,
+                "agent_id": agent_id,
+                "result": None,
+                "error": str(error),
+                "original_error_type": type(e).__name__,
+                "recovery_suggestion": error.recovery_suggestion,
+                "context": context,
             }
-        )
 
-        return {
-            "instance_id": instance_id,
-            "agent_id": agent_id,
-            "result": content,
-            "context": updated_context,
-        }
-
-    except Exception as e:
-        error = wrap_agent_error(e, agent_id, task)
-        return {
-            "instance_id": instance_id,
-            "agent_id": agent_id,
-            "result": None,
-            "error": str(error),
-            "original_error_type": type(e).__name__,
-            "recovery_suggestion": error.recovery_suggestion,
-            "context": context,
-        }
+    # Should be unreachable given the return in except block, but for type safety:
+    return {
+        "instance_id": instance_id,
+        "agent_id": agent_id,
+        "result": None,
+        "error": "Unknown error (retries exhausted)",
+        "context": context,
+    }
 
 
 async def make_error_result(

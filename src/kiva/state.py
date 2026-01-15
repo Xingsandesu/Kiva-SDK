@@ -34,6 +34,8 @@ class AgentInstanceState(TypedDict):
     model_name: str
     api_key: str | None
     base_url: str | None
+    worker_max_iterations: int
+    max_retries: int
 
 
 class TaskAssignment(TypedDict, total=False):
@@ -118,6 +120,8 @@ class OrchestratorState(TypedDict):
     base_url: str | None
     workflow_override: str | None
     max_iterations: int
+    worker_max_iterations: int
+    max_retries: int
     max_parallel_agents: int
     parallel_strategy: str
     total_instances: int

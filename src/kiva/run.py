@@ -29,6 +29,8 @@ async def run(
     base_url: str | None = None,
     workflow_override: str | None = None,
     max_iterations: int = 10,
+    worker_max_iterations: int = 100,
+    max_retries: int = 3,
     max_parallel_agents: int = 5,
 ) -> AsyncIterator[StreamEvent]:
     """Run multi-agent orchestration and yield streaming events.
@@ -46,6 +48,8 @@ async def run(
         workflow_override: Force a specific workflow ("router", "supervisor",
             "parliament"). If None, workflow is selected automatically.
         max_iterations: Maximum iterations for parliament workflow. Defaults to 10.
+        worker_max_iterations: Maximum iterations for worker agents. Defaults to 100.
+        max_retries: Maximum retry attempts for failed worker agents. Defaults to 3.
         max_parallel_agents: Maximum concurrent agent executions. Defaults to 5.
 
     Yields:
@@ -102,6 +106,8 @@ async def run(
         "base_url": base_url,
         "workflow_override": workflow_override,
         "max_iterations": max_iterations,
+        "worker_max_iterations": worker_max_iterations,
+        "max_retries": max_retries,
         "max_parallel_agents": max_parallel_agents,
         "complexity": "",
         "workflow": "",

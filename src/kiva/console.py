@@ -237,8 +237,15 @@ class KivaLiveRenderer:
 
             status_text = self._get_status_text(status, color)
 
+            if status == "retrying":
+                retry_info = state.get("retry_info", "")
+                status_text = Text(f"[R] RETRY {retry_info}", style="bold yellow")
+
+            current_action = state.get("current_action", "")
             if status == "completed" and result:
                 content = result[:80] + "..." if len(result) > 80 else result
+            elif current_action and status == "running":
+                content = f"{task[:20]}... | {current_action}"
             else:
                 content = task[:60] + "..." if len(task) > 60 else task
 
@@ -579,6 +586,51 @@ class KivaLiveRenderer:
             self.agent_states[agent_id]["status"] = "error"
             self.agent_states[agent_id]["result"] = f"Error: {error}"
 
+    def on_worker_state_update(self, instance_id: str, data: dict):
+        """Handle worker agent state update."""
+        if instance_id in self.instance_states:
+            content = data.get("content", "")
+            tool_calls = data.get("tool_calls", [])
+            role = data.get("role", "")
+
+            status_msg = ""
+            if tool_calls:
+                tool_names = [tc.get("name") for tc in tool_calls]
+                status_msg = f"[bold]Tool Call:[/] {', '.join(tool_names)}"
+            elif role == "tool":
+                clean_content = content.replace("\n", " ").strip()
+                preview = (
+                    clean_content[:40] + "..."
+                    if len(clean_content) > 40
+                    else clean_content
+                )
+                status_msg = f"[italic]Tool Result:[/] {preview}"
+            elif content:
+                # Clean up content (remove newlines etc)
+                clean_content = content.replace("\n", " ").strip()
+                preview = (
+                    clean_content[:40] + "..."
+                    if len(clean_content) > 40
+                    else clean_content
+                )
+                status_msg = f"[italic]Thinking:[/] {preview}"
+
+            if status_msg:
+                self.instance_states[instance_id]["current_action"] = status_msg
+
+
+    def on_instance_retry(self, instance_id: str, attempt: int, max_retries: int):
+        """Handle instance retry event."""
+        if instance_id in self.instance_states:
+            self.instance_states[instance_id]["status"] = "retrying"
+            self.instance_states[instance_id]["retry_info"] = f"{attempt}/{max_retries}"
+
+    def on_instance_error(self, instance_id: str, error: str):
+        """Handle instance error event."""
+        if instance_id in self.instance_states:
+            self.instance_states[instance_id]["status"] = "error"
+            self.instance_states[instance_id]["result"] = f"Error: {error}"
+
 
 async def run_with_console(
     prompt: str,
@@ -586,6 +638,7 @@ async def run_with_console(
     base_url: str,
     api_key: str,
     model_name: str,
+    worker_max_iterations: int = 100,
     refresh_per_second: int = 12,
 ) -> str | None:
     """Run orchestration with rich console visualization.
@@ -599,6 +652,7 @@ async def run_with_console(
         base_url: API endpoint URL.
         api_key: API authentication key.
         model_name: Model identifier for the lead agent.
+        worker_max_iterations: Maximum iterations for worker agents. Defaults to 100.
         refresh_per_second: Console refresh rate. Defaults to 12.
 
     Returns:
@@ -628,6 +682,7 @@ async def run_with_console(
             base_url=base_url,
             api_key=api_key,
             model_name=model_name,
+            worker_max_iterations=worker_max_iterations,
         ):
             if event.type == "token":
                 renderer.on_token(event.data["content"])
@@ -734,6 +789,22 @@ async def run_with_console(
             elif event.type == "error":
                 renderer.on_error(
                     event.agent_id or "unknown",
+                    event.data.get("error", "Unknown error"),
+                )
+            elif event.type == "worker_state_update":
+                renderer.on_worker_state_update(
+                    event.data.get("instance_id", ""),
+                    event.data.get("data", {}),
+                )
+            elif event.type == "instance_retry":
+                renderer.on_instance_retry(
+                    event.data.get("instance_id", ""),
+                    event.data.get("attempt", 0),
+                    event.data.get("max_retries", 0),
+                )
+            elif event.type == "instance_error":
+                renderer.on_instance_error(
+                    event.data.get("instance_id", ""),
                     event.data.get("error", "Unknown error"),
                 )
             live.update(renderer.build_display())
